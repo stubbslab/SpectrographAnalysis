@@ -569,7 +569,7 @@ class CommandHolder:
         """
         return can.recursiveStrToListOfLists((self.getOSELOTSVar('ghost_search_buffer')), elem_type_cast = float)
 
-    def getBackgroundFitRegion(self): 
+    def getBackgroundFitRegion(self):
         """
         Get image range over which to fit background. These are the length
         of pixels left, right, above, and below the spectrum region to do
