@@ -63,6 +63,11 @@ class CommandHolder:
     def getRefThroughputFile(self):
         return str(self.getOSELOTSVar('ref_throughput_file'))
 
+    def getAbsThroughputData(self):
+        ref_wavelength = float(self.getOSELOTSVar('abs_throughput_wavelength'))
+        abs_throughput_val = float(self.getOSELOTSVar('abs_throughput_Ry_per_ADU'))
+        return [ref_wavelength, abs_throughput_val]
+
     def getRefSkyLinesFile(self):
         return str(self.getOSELOTSVar('ref_sky_lines_file'))
 
@@ -88,6 +93,11 @@ class CommandHolder:
     def getBackgroundCutWavelengths(self):
         "The wavelengths that mark the edges of the spectrum.  Sections of detector below and above this range will be used to fit the background. "
         return [float(bound) for bound in can.recursiveStrToListOfLists(self.getOSELOTSVar('background_cut_wavelengths'))]
+
+    def getImageDimensions(self):
+        "The dimensions of the image, in pixels. "
+        return [float(dim) for dim in can.recursiveStrToListOfLists(self.getOSELOTSVar('image_dimensions'))]
+
 
     def getPixelScale(self):
         return float(self.getPISCOVar('pixel_scale'))
@@ -129,7 +139,7 @@ class CommandHolder:
          return self.getPISCOVar('amp_keyword')
 
     def getExpTimeKeyword(self):
-        return self.getPISCOVar('exp_time_keyword')
+        return self.getOSELOTSVar('exp_time_keyword')
 
     def getBiasSubKeyword(self):
         return self.getPISCOVar('bias_sub_keyword')
@@ -200,6 +210,9 @@ class CommandHolder:
     def getOverscanSections1x1(self):
         return can.recursiveStrToListOfLists((self.getPISCOVar('overscan_sections_1x1')), elem_type_cast = int)
 
+    def getTextSuffix(self):
+        return str(self.getOSELOTSVar('text_suffix'))
+
     def getListSuffix(self):
         return str(self.getOSELOTSVar('list_suffix'))
 
@@ -240,6 +253,23 @@ class CommandHolder:
         """
         return int(self.getOSELOTSVar('background_size'))
 
+    def getScatterBlurGaussSigam(self):
+        """
+        The sigma of the Gaussian kernel, in pixels, used to smooth
+         the scatter pattern.
+        """
+        return int(self.getOSELOTSVar('scatter_blur_gauss_sigma'))
+
+    def getStdThreshForScatterCorrecting(self):
+        """
+        The number of sigmas above background that a column of the spectrum
+            must be to warrant including its effect in the scatter pattern.
+        This is important, as including sections of the scatter that are too
+            faint introduce more noise (bias noise in the scatter pattern)
+            than they remove systematic error.
+        """
+        return float(self.getOSELOTSVar('n_sigma_for_scatter_correction'))
+
     def getBackgroundLow(self):
         """
         A boolean (1 or 0).  If True (1), the background is measured
@@ -278,6 +308,13 @@ class CommandHolder:
         """
         return str(self.getOSELOTSVar('spectrum_suffix'))
 
+    def getMultistepSpectrumSuffix(self):
+        """
+        The suffix to indicate we have an image showing various steps that
+            lead to the final spectrum.
+        """
+        return str(self.getOSELOTSVar('multistep_spectrum_suffix'))
+
     def getOrthogonalBinOfSpectrumSuffix(self):
         """
         The suffix to name the plot showing the binning
@@ -292,6 +329,14 @@ class CommandHolder:
            curvature.
         """
         return float(self.getOSELOTSVar('n_std_for_strong_line_ref'))
+
+    def getBinningForBackgroundNoiseMeasurement(self):
+        """
+        The number of adjacent pixels to bin together to estimate the
+            standard deviation of the background noise.  Note this is
+            pixels AFTER doing the 1d binning.
+        """
+        return int(self.getOSELOTSVar('n_pix_for_background_noise'))
 
     def getNStdForFullRefLines(self):
         """
@@ -647,10 +692,15 @@ class CommandHolder:
         list_suffix = self.getListSuffix()
         return flat_label + list_suffix
 
-    def getMasterBiasName(self):
+    def getMasterBiasImageName(self):
         bias_label = self.getMasterBiasLabel()
         image_suffix = self.getImageSuffix()
         return bias_label + image_suffix
+
+    def getMasterBiasLevelName(self):
+        bias_label = self.getMasterBiasLabel()
+        text_suffix = self.getTextSuffix()
+        return bias_label + text_suffix
 
     def getMasterDarkName(self):
         dark_label = self.getMasterDarkLabel()

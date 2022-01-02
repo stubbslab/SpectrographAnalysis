@@ -1,6 +1,7 @@
 import numpy as np
 import math
 import matplotlib.pyplot as plt
+from matplotlib import cm
 import sys
 import os
 import cantrips as can
@@ -14,6 +15,10 @@ import cosmics_py3 as cosmics
 import sys
 import scipy
 import SpectroscopyReferenceParamsObject as ref_param
+from matplotlib.collections import LineCollection
+from matplotlib.colors import ListedColormap, BoundaryNorm
+import matplotlib.gridspec as gridspec
+import SashasAstronomyTools as sat
 
 #Use reference emission lines pulled from this paper: https://ui.adsabs.harvard.edu/abs/2003A%26A...407.1157H/abstract
 # at this link: http://cdsarc.u-strasbg.fr/viz-bin/qcat?J/A+A/407/1157
@@ -23,12 +28,47 @@ import SpectroscopyReferenceParamsObject as ref_param
 
 """
 Hi.  This file is designed to both reduce and extract spectra from image files taken with the OSELOT Sky Spectograph.
-The file can be run from the Command Line.  To execute, you must provide, in order:
-[the name of the file to be processed]
-[the directory where the image files can be found]
-[the name of the master bias file, to be looked for or made]
-[the name of the master dark file, to be looked for or made]
-[the name of the image fits file after it has been processed]
+To process a single line, starting from the Command Line:
+$ python
+>>> import ProcessRawSpectrumClass as prsc
+>>> import cantrips as can
+>>> date = ['2021', '08', '20']
+>>> focus_str = '25p0'
+>>> target_dir = '/Users/sashabrownsberger/Documents/Harvard/physics/stubbs/skySpectrograph/data/ut' + ''.join([str(elem) for elem in date]) + '/'
+>>> processor = prsc.SpectrumProcessor(target_dir, show_fits = 0)
+>>> bias_nums = list(range(19, 39+1, 1))
+>>> KR1_nums = list(range(10, 19, 1))
+>>> bias_imgs = ['Bias_' + '_'.join([str(elem) for elem in date]) + '_' + str(i) + '.fits' for i in bias_nums]
+>>> can.saveListsToColumns(bias_imgs, 'BIAS.list', target_dir)
+>>> KR1_imgs = ['KR1_f' + focus_str + '_' + '_'.join([str(elem) for elem in date]) + '_' + str(i) + '.fits' for i in KR1_nums]
+>>> can.saveListsToColumns(KR1_imgs, 'KR1.list', target_dir )
+>>> ref_spec_solution_file = 'OSELOTSWavelengthSolution.txt'
+>>> processor.getWavelengthSolution(ref_spec_images_list = 'KR1.list', ref_spec_solution_file = ref_spec_solution_file, save_new_reference_spectrum = 1, ref_spec = None, show_fits = None)
+>>> #As a check, process the refernece wavelength images:
+>>> processor.pullCombinedSpectrumFromImages(KR1_imgs, show_fits = None, analyze_spec_of_ind_images = 1, line_dict_id = None, plot_title = 'Stacked KR1 Spectrum', save_intermediate_images = 0, stacked_image_name = 'StackedKR1Image_img' + str(KR1_nums[0]) + 'To' + str(KR1_nums[-1]))
+# >>> for i in range(len(KR1_imgs)):
+# >>>     img = KR1_imgs[i]
+# >>>     img_num = KR1_nums[i]
+# >>>     processor.measureStrengthOfLinesInImage(img, show_fits = 0, line_dict_id = img_num, redetermine_spec_range = 0)
+#Now we should reinitiate the processor so that we don't try to match reference and sky lines
+>>> processor = prsc.SpectrumProcessor(target_dir, show_fits = 0)
+>>> dark_sky_nums = list(range(81, 315 + 1, 1))
+>>> all_sky_nums = list(range(73, 322 + 1, 1))
+>>> dark_sky_imgs = ['sky_f' + focus_str + '_' + '_'.join([str(elem) for elem in date]) + '_' + str(i) + '.fits' for i in dark_sky_nums]
+>>> all_sky_imgs = ['sky_f' + focus_str + '_' + '_'.join([str(elem) for elem in date]) + '_' + str(i) + '.fits' for i in all_sky_nums]
+>>> processor.pullCombinedSpectrumFromImages(dark_sky_imgs, show_fits = None, analyze_spec_of_ind_images = 1, line_dict_id = None, plot_title = 'Stacked Spectrum', save_intermediate_images = 0, stacked_image_name = 'StackedSkyImage_img' + str(dark_sky_nums[0]) + 'To' + str(dark_sky_nums[-1]))
+>>> for i in range(len(all_sky_imgs)):
+>>>     img = all_sky_imgs[i]
+>>>     img_num = all_sky_nums[i]
+>>>     processor.measureStrengthOfLinesInImage(img, show_fits = 0, line_dict_id = img_num, redetermine_spec_range = 0)
+>>> processor.plotScaledLineProfilesInTime()
+>>> processor.plotLineProfilesInTime()
+>>> processor.saveSpecProcessor('FullNight_ut20201130.prsc', save_dir = None, )
+# You can reload the saved spectrum processor using the following:
+>>> import ProcessRawSpectrumClass as prsc
+>>> target_dir = '/Users/sashabrownsberger/Documents/Harvard/physics/stubbs/skySpectrograph/data/ut20201130/'
+>>> processor_reloaded = prsc.SpectrumProcessor(target_dir, show_fits = 0)
+>>> processor_reloaded.loadSpecProcessor('FullNight_ut20201130.prsc', load_dir = None)
 
 For example, on my machine (that of Sasha Brownsberger), I can type the following into the command line, and the code runs provided I am in the directory with this file:
 $ python ProcessRawSpectrum.py sky_2020_09_23_68.fits /Users/sashabrownsberger/Documents/Harvard/physics/stubbs/skySpectrograph/data/ut20200925/ BIAS.fits DARK.fits sky_2020_09_23_68_proc.fits sky_2020_09_23_68_spec.png sky_2020_09_23_68_perp_spec.png
@@ -47,11 +87,39 @@ It will then begin to process the spectrum, displaying plots as it does.  This t
 9. Match lines to list of identified lines to get the wavelength solution.
 """
 
+def gaussian_deriv(xs, A, mu, sig):
+    """
+    The functional form a Gaussian derivative, used when searching for spectral lines
+        in a 1D spectrum.
+    """
+    vals = A * np.exp(-(xs - mu) ** 2.0 / (2.0 * sig ** 2.0)) * -2.0 * (xs - mu) / (2.0 * sig ** 2.0)
+    return vals
+
+def polyFitVar(ind_vals, dep_vals, fit_order, n_std_for_rejection_in_fit):
+    """
+    Do a polynomial fit between an independent variable and a dependent
+          variable, at some specified fit order.  The notable feature of
+          this fit is that data points that are too disparate (indicated by
+          the n_std_for_rejection_in_fit) parameter are not used in the fit.
+    This polynomial fitting algorithm is used several times in a row,
+          and is therefore defined here.
+    """
+    med = np.median(dep_vals)
+    std = np.std(dep_vals)
+    ind_vals_for_fit = [ind_vals[i] for i in range(len(dep_vals)) if abs(dep_vals[i] - med) <= n_std_for_rejection_in_fit * std]
+    ind_vals_for_fit_range = [min(ind_vals_for_fit), max(ind_vals_for_fit)]
+    dep_vals_to_fit = [dep_vals[i] for i in range(len(dep_vals)) if abs(dep_vals[i] - med) <= n_std_for_rejection_in_fit * std]
+    var_poly_fit = np.polyfit(ind_vals_for_fit, dep_vals_to_fit, fit_order)
+    var_funct = lambda val: np.poly1d(var_poly_fit)(val)
+
+    return var_funct
+
 class SpectrumProcessor:
 
     #For Gemini sky lines:
     # ref_file = 'GeminiSkyBrightness.txt', ref_file_dir = '/Users/sashabrownsberger/Documents/Harvard/physics/stubbs/skySpectrograph/calibrationDataFiles/', ref_file_delimiter = ' ', n_lines_to_ignore = 14
     def importReferenceSpectrum(self, ref_file = None, ref_data = None, ref_file_delimiter = ' ', n_lines_to_ignore = 0, ref_file_dir = ''):
+
         if ref_data == None:
             if ref_file == None:
                 print ('You must specify either a reference spectrum data file or give reference spectrum data data (wavelength, throughput).  Not redifining reference spectrum interpolator. ')
@@ -65,7 +133,14 @@ class SpectrumProcessor:
 
     #For OSELOTS:
     # throughput_file = 'OSELOT_throughput.txt', throughput_file_dir = '/Users/sashabrownsberger/Documents/Harvard/physics/stubbs/skySpectrograph/calibrationDataFiles/', delimiter = ' ', n_lines_to_ignore = 0
-    def importSystemThroughput(self, throughput_file = None, throughput_data = None, throughput_file_delimiter = ',', n_lines_to_ignore = 1, throughput_file_dir = None):
+    def importSystemThroughput(self, throughput_file = None, throughput_data = None, throughput_file_delimiter = ',', n_lines_to_ignore = 1, throughput_file_dir = None, abs_throughput_wavelength = None, abs_throughput_val = None):
+        """
+        Returns throughput interp in Rayleighs per ADU.  NOTE: you need to divide ADU
+            results by the exposure time AND you need to divide by the wavelength
+            range that your integrated pixel columns subtend.
+        For OSELOTS running on this machine,
+        throughput_file = 'OSELOT_throughput.txt', throughput_file_dir = '/Users/sashabrownsberger/Documents/Harvard/physics/stubbs/skySpectrograph/calibrationDataFiles/', delimiter = ' ', n_lines_to_ignore = 0
+        """
         if throughput_data == None:
             if throughput_file == None and self.throughput_file == None:
                 print ('You must specify either a throughput data file or give throughput data (wavelength, throughput).  Not redifining throughput interpolator. ')
@@ -74,12 +149,49 @@ class SpectrumProcessor:
                 throughput_file = self.throughput_file
             if throughput_file_dir == None:
                 throughput_file_dir = self.archival_data_dir
+            if abs_throughput_wavelength == None:
+                abs_throughput_wavelength = self.abs_throughput_wavelength
+            if abs_throughput_val == None:
+                abs_throughput_val = self.abs_throughput_val
             throughput_data = can.readInColumnsToList(throughput_file, file_dir = throughput_file_dir, n_ignore = n_lines_to_ignore, delimiter = throughput_file_delimiter, convert_to_float = 1)
+            raw_throughput_interp = scipy.interpolate.interp1d(throughput_data[0], throughput_data[1] , fill_value = 0.0, bounds_error=False)
+            throughput_data = [ throughput_data[0], raw_throughput_interp(throughput_data[0]) / raw_throughput_interp(abs_throughput_wavelength) / abs_throughput_val ]
+
         throughput_interp = scipy.interpolate.interp1d(throughput_data[0], throughput_data[1] , fill_value = 0.0, bounds_error=False)
 
         return throughput_interp
 
+    def showSystemThroughput(self, throughput_file_name, throughput_data = None, throughput_file_delimiter = ',', n_lines_to_ignore = 1, throughput_file_dir = None, labelsize = 14, figsize = [7, 4]):
+        """
+        Make a plot of the OSELOTS throughput as a function of input wavelength.
+        This data is measured in lab, not during the night.  This function is provided for convenience, so the user
+            can check that throughput data we're using is consistent with expectations.
+        """
+        f, axarr = plt.subplots(1,1, figsize = figsize)
+        if throughput_data == None:
+            throughput_data = can.readInColumnsToList(self.throughput_file, file_dir = self.archival_data_dir, n_ignore = n_lines_to_ignore, delimiter = throughput_file_delimiter, convert_to_float = 1)
+        raw_throughput_interp = scipy.interpolate.interp1d(throughput_data[0], throughput_data[1] , fill_value = 0.0, bounds_error=False)
+        throughput_data = [ throughput_data[0], raw_throughput_interp(throughput_data[0]) / raw_throughput_interp(self.abs_throughput_wavelength) * self.abs_throughput_val ]
+        throughput_plot = axarr.plot(throughput_data[0], throughput_data[1], c = 'red', linestyle = '--')[0]
+        pivot_line = axarr.axvline(self.abs_throughput_wavelength, color = 'grey', alpha = 0.5, linestyle = '--')
+        axarr.legend([throughput_plot, pivot_line], ['OSELOTS throughput', 'Location of absolute measurement'])
+        axarr.set_xlabel('Sky wavelength (nm)', fontsize = labelsize)
+        axarr.set_ylabel(r'Throughput (ADU Ry$^{-1}$ s$^{-1}$)', fontsize = labelsize)
+        axarr.set_title('OSELOTS Absolute Throughput')
+
+        plt.tight_layout()
+        plt.savefig(self.archival_data_dir + throughput_file_name)
+        return 1
+
+
+
     def CleanCosmics(self, image_dir, image_names, readnoise = 5.0, sigclip = 5.0, sigfrac = 0.3, objlim = 5.0, maxiter = 2, new_image_prefix = 'crc_'):
+        """
+        Remove cosmic rays (or sharp, bright features) from an image.  Should be applied to
+           any exposure that is longer than a few seconds. Uses the LA cosmics algorithm,
+           implemented in python using the cosmics_py3.py package.
+        Documentation for LA cosmic is available at: http://www.astro.yale.edu/dokkum/lacosmic/
+        """
         for image_name in image_names:
             #print ('Beginning cosmic ray cleaning for image ' + image_dir + image_name)
             image_array, image_header = cosmics.fromfits(image_dir + image_name)
@@ -90,10 +202,48 @@ class SpectrumProcessor:
         return 1
 
     def readInRawSpect(self, target_file, target_dir):
+        """
+        Reads in a raw spectrum file.  Currently (and far as I can see ahead),
+            this means just reading in a .fits image.
+        """
         return can.readInDataFromFitsFile(target_file, target_dir)
 
-    def makeMasterBias(self, master_bias_file, target_dir,
+    def plotBiasLevels(self, bias_list = 'BIAS.list'):
+        """
+        Make a plot of the median bias levels in time.  We read in the bias images
+            listed in the text file indicated by the bias_list variable, reads
+            the exposure start time parameter from the header, and plots those
+            start times against the median level of the bias.  This plots is
+            saved to a .pdf file.
+        """
+        f, axarr = plt.subplots(1,2, figsize = (12, 6))
+        bias_list_exists = os.path.isfile(target_dir + bias_list)
+        if not(bias_list_exists):
+            print ('Unable to find bias list: ' + target_dir + bias_list)
+            return 0
+
+        print ('Making plot of bias level... ')
+        bias_images=np.loadtxt(target_dir + bias_list, dtype='str')
+        sat.measureStatisticsOfFitsImages(bias_images, ax = axarr[0], data_dir = target_dir, stat_type = 'mean', show_plot = 0, save_plot = 0, save_plot_name = target_dir + 'BiasLevels.pdf', ylabel = 'Mean counts in image', title = 'OSELOTS Bias Mean Level - ut' + ''.join(self.date))
+        sat.measureStatisticsOfFitsImages(bias_images, ax = axarr[1], data_dir = target_dir, stat_type = 'std', show_plot = 0, save_plot = 0, save_plot_name = target_dir + 'BiasLevels.pdf', ylabel = 'Std of counts in image', title = 'OSELOTS Bias Scatter - ut' + ''.join(self.date))
+        plt.tight_layout()
+        plt.savefig(target_dir + 'BiasLevels.pdf')
+
+        return 1
+
+
+    def makeMasterBias(self, master_bias_image_file, master_bias_level_file, target_dir,
                        bias_list = 'Bias.list', bias_x_partitions = 2, bias_y_partitions = 2):
+        """
+        Make a master bias image from a stack of biases.  Ideally, the biases are interleaved
+            between science images.  Because the stack of images can be quite large and
+            median stacking requires reading in many images into memory at once, this median
+            combination uses the smart medianing technique, implemented by the cantrips.py
+            library.
+        Bias level appears to change slowly over time.   Therefore, the master bias consists of
+             two parts: the median of a stack of bias images AFTER THE MEDIAN HAS BEEN SUBTRACTED
+             FROM EACH IMAGE and a plot of median bias level in time.
+        """
         bias_list_exists = os.path.isfile(target_dir + bias_list)
         if not(bias_list_exists):
             print ('Unable to find bias list: ' + target_dir + bias_list)
@@ -103,7 +253,8 @@ class SpectrumProcessor:
             bias_images = [str(bias_images)]
         print ('Median combining bias images, in parts ...')
         print ('bias_images = ' + str(bias_images))
-        med_bias = can.smartMedianFitsFiles(bias_images, target_dir, bias_x_partitions, bias_y_partitions)[0]
+        med_bias = can.smartMedianFitsFiles(bias_images, target_dir, bias_x_partitions, bias_y_partitions, subtract_stat = 'mean')[0]
+        bias_level_map = sat.measureStatisticsOfFitsImages(bias_images, ax = None, data_dir = target_dir, stat_type = 'mean', show_plot = 0, save_plot = 0, )
         m_bias_header = can.readInDataFromFitsFile(bias_images[-1], target_dir)[1]
         utc_time = datetime.utcnow()
         m_bias_header['MKTIME'] = (str(datetime.utcnow() ), 'UTC of master bias creation')
@@ -113,25 +264,49 @@ class SpectrumProcessor:
         print ('med_bias = ' + str(med_bias))
         #print('med_bias.data = ' + str(med_bias.data))
         #print ('med_bias_header = ' + str(m_bias_header))
-        can.saveDataToFitsFile(np.transpose(med_bias), master_bias_file, target_dir, header = m_bias_header, overwrite = True, n_mosaic_extensions = 0)
+        can.saveDataToFitsFile(np.transpose(med_bias), master_bias_image_file, target_dir, header = m_bias_header, overwrite = True, n_mosaic_extensions = 0)
+        can.saveListsToColumns(bias_level_map, master_bias_level_file, target_dir, header = 'exp time(s), mean bias level', sep = ',')
         #c.saveDataToFitsFile(np.transpose(med_bias), master_bias_file, target_dir, header = 'default', overwrite = True, n_mosaic_extensions = 0)
-        print ('Master bias file created ' + target_dir + master_bias_file)
+        print ('Master bias files created: ')
+        print (target_dir + master_bias_image_file)
+        print (target_dir + master_bias_level_file)
         return 1
 
-    def biasSubtract(self, image_data, image_header, master_bias_file):
-        bias_data, bias_header = can.readInDataFromFitsFile(master_bias_file, self.target_dir)
-        image_data = image_data - bias_data
+    def biasSubtract(self, image_data, image_header, master_bias_image_file, master_bias_level_file):
+        """
+        Subtracts the measured bias level (determined from the makeMasterBias command)
+           from the image given by image_data. The 2d bias structure is determined by
+           the median stack of the bias images and the median bias level is determined
+           by interpolating between the median bias levels of the individual bias
+           images, in time.
+        """
+        start_time_str = image_header[self.obs_time_keyword]
+        bias_structure_data, bias_header = can.readInDataFromFitsFile(master_bias_image_file, self.target_dir)
+        bias_levels = can.readInColumnsToList(master_bias_level_file, self.target_dir, n_ignore = 1, delimiter = ',', verbose = 0)
+        bias_levels = [[float(start_time) for start_time in bias_levels[0]], [float(bias_level) for bias_level in bias_levels[1]]]
+        bias_interp = scipy.interpolate.interp1d(bias_levels[0], bias_levels[1], bounds_error = False, fill_value = 'extrapolate')
+        start_time_float = datetime.strptime(start_time_str, '%Y-%m-%dT%H:%M:%SZ').timestamp()
+        bias_level = float(bias_interp(start_time_float))
+        image_data = image_data - bias_structure_data - bias_level
         image_header['BIASSUB'] = (str(datetime.utcnow() ), 'UTC of Bias subtraction')
-        image_header['MBIAS'] = (master_bias_file, 'Name of Subtracted Master Bias File')
+        image_header['MBIAS'] = (master_bias_image_file, 'Name of Subtracted Master Bias File')
+        image_header['BIASLEVL'] = (bias_level, 'Median bias level')
 
         return image_data, image_header
 
     def darkSubtract(self, image_data, image_header, master_dark_file, exp_time_keyword = 'EXPTIME'):
+        """
+        Subtract the 'dark' (meaning common mode) signal from an image. The
+            dark data is produced using the makeMasterDark command.  The dark
+            image is scaled by the ratio of the image exposure time (read from)
+            the provided header) and the dark exposure time (read from the)
+            header of the master dark image.
+        """
         dark_data, dark_header = can.readInDataFromFitsFile(master_dark_file, target_dir)
         exp_time = float(image_header[exp_time_keyword])
         image_data = image_data - dark_data * exp_time
         image_header['DARKSUB'] = (str(datetime.utcnow() ), 'UTC of Dark subtraction')
-        image_header['MDARK'] = (master_bias_file, 'Name of Subtracted Master Bias File')
+        image_header['MDARK'] = (master_dark_file, 'Name of Subtracted Master Bias File')
 
         return image_data, image_header
 
@@ -139,6 +314,17 @@ class SpectrumProcessor:
                        dark_list = 'Dark.list', bias_sub_prefix = 'b_',
                        dark_x_partitions = 2, dark_y_partitions = 2,
                        remove_intermediate_files = 0 ):
+        """
+        Makes a master "dark" image, or image with the spectral source blocked.
+            In other words, this is the image of the common-mode illumination
+            that does nto depend on the input spectrum.
+        Ideally, this images are taken with the lens cover on the entrance
+            lens.
+        This calculation is performed by first cosmic ray and bias correcting
+            each individual no light image.  Then, these processed no light
+            images are median stacked.
+        This master dark image should be subtracted from each science image.
+        """
         dark_list_exists = os.path.isfile(target_dir + dark_list)
         if not(dark_list_exists):
             print ('Unable to find dark list: ' + target_dir + dark_list)
@@ -171,6 +357,14 @@ class SpectrumProcessor:
 
     def determineSpecRowRanges(self, current_image,
                                sum_method = 'sum', n_sig_deriv_spikes_for_spec = 1.5, n_sig_gauss_to_define_spec_width = 2.0 , sig_step = 0.5, showIDedLines = 1, save_perp_spec_image = 0, perp_spec_image_name = 'IdentifiedSpecRange.png'):
+        """
+        Determine the range of image rows subtended by the spectrum.
+        This is done by integrating the image ALONG rows, and looking for sudden fall-offs,
+            indicating the edge of the spectrum.  The 'sudden' fall-offs are determined
+            by looking at first derivative of the boxcar-smoothed binned-along row image.
+        This spectral range is used by the class to determine which rows it should integrate
+            to reduce the 2d image to a 1d spectrum.
+        """
         perp_spec_axis = (self.spec_axis + 1) % 2
         perp_spec = np.sum(current_image, axis = perp_spec_axis)
         if self.bg_std_buffer > 0:
@@ -186,18 +380,14 @@ class SpectrumProcessor:
         while len(deriv_indeces_above_std) == 0:
             deriv_indeces_above_std = [i for i in range(len(perp_spec_derivs)) if abs (perp_spec_derivs[i] - perp_derivs_med) / perp_derivs_std >= n_sig_deriv_spikes_for_spec ]
             if len(deriv_indeces_above_std) == 0: n_sig_deriv_spikes_for_spec = n_sig_deriv_spikes_for_spec - sig_step
-        print ('deriv_indeces_above_std = ' + str(deriv_indeces_above_std))
-        print ('perp_spec_peak_loc = ' + str(perp_spec_peak_loc))
         left_slope_around_peak = np.min([index for index in deriv_indeces_above_std if index < perp_spec_peak_loc])
         right_slope_around_peak = np.max([index for index in deriv_indeces_above_std if index > perp_spec_peak_loc])
-        print ('[left_slope_around_peak, right_slope_around_peak] = ' + str([left_slope_around_peak, right_slope_around_peak]))
         perp_line_step_up, perp_line_step_down = [left_slope_around_peak, right_slope_around_peak]
         fit_spect_funct = lambda xs, A, l, r, A0: A * np.where(xs < r, 1, 0 ) * np.where(xs > l, 1, 0 ) + A0
         #fit_spect_funct = lambda xs, A, mu, sig, alpha, A0: A * np.exp(-(np.abs(np.array(xs) - mu)/ (np.sqrt(2.0) * sig )) ** alpha) + A0
         init_guess = [np.max(perp_spec_smooth) , perp_line_step_up, perp_line_step_down, np.median(perp_spec_smooth)]
         #init_guess = [np.max(perp_spec) , perp_spec_peak_loc, (perp_line_step_down - perp_line_step_up) / 2.0, 2.0, 0.0]
         fitted_profile = optimize.minimize(lambda params: np.sqrt(np.sum(np.array(fit_spect_funct(list(range(perp_len)), *params) - perp_spec_smooth) ** 2.0)) / perp_len, x0 = init_guess)['x']
-        print('fitted_profile = ' + str(fitted_profile))
         fitted_variance = np.sqrt(fitted_profile[2] ** 2.0 * special.gamma(3.0 / fitted_profile[3]) / special.gamma(1.0 / fitted_profile[3]))
         left_side, right_side = [fitted_profile[1], fitted_profile[2]]
         #left_side, right_side = (fitted_profile[1] - n_sig_gauss_to_define_spec_width * fitted_variance, fitted_profile[1] + n_sig_gauss_to_define_spec_width * fitted_variance)
@@ -229,23 +419,25 @@ class SpectrumProcessor:
         return [perp_line_step_up + self.bg_std_buffer, perp_line_step_down + self.bg_std_buffer]
 
     def fullSpecFitFunct(self, ref_xs, ref_ys, lines, ref_params):
+        """
+        The function that is minimized when determining the line width (i.e. focus) as a function
+           of pixel position.  The positions and heights of the lines are taken as given and the
+           widths of the lines in pixel space are varied.
+        The seeing is assumed to conform to a polynomial of an order specified by the number of
+           seeing fit parameters.
+        """
         n_points = len(ref_xs)
         seeing_by_pixel_funct = np.poly1d(ref_params)
-        #print ('[ref_xs, [line[1] for line in lines]] = ' + str([ref_xs, [line[1] for line in lines]]))
         fit_ys = np.sum([line[0] * np.exp(-(line[1] - ref_xs) ** 2.0 / (2.0 * seeing_by_pixel_funct(line[1] - n_points // 2) ** 2.0 ))  for line in lines], axis = 0)
         residual = np.sqrt(np.sum((fit_ys - np.array(ref_ys)) ** 2.0))
-        #f, axarr = plt.subplots(2,1, figsize = [15,4])
-        #axarr[0].plot(ref_xs, seeing_by_pixel_funct(ref_xs- n_points // 2))
-        #axarr[1].plot(ref_xs, ref_ys)
-        #axarr[1].plot(ref_xs, fit_ys)
-        #plt.draw()
-        #plt.pause(0.1)
-        #plt.close('all')
-        #print ('[ref_params, residual] = ' + str([ref_params, residual]))
         return residual
 
-
     def simulFitLineWidths(self, ref_xs, ref_ys, ref_emission_lines, init_guess = None):
+        """
+        Determines the best fit polynomial form of the seeing vs pixel for the spectrum by
+           minimizing the sum-of-square difference between the measured spectrum and a
+           series of Gaussians at the line locations with widths specified by the polynomial.
+        """
         if init_guess == None:
             init_guess = np.zeros(self.seeing_fit_order + 1)
             init_guess[-1] = self.init_seeing_guess
@@ -255,36 +447,44 @@ class SpectrumProcessor:
         return rescaled_best_seeing_params
 
     def SingleLineFunctionToMinimize(self, xs, ys, fit_width, fit_funct, fit_params):
+        """
+        The sum-of-square difference between a spectral line from a set of parameters
+           and a subset of the measured spectrum.  This is the function that is
+           minimized when fitting each line to the data.
+        """
         central_pix = round(fit_params[1])
         if np.isnan(central_pix) or np.isnan(fit_width) or np.isnan(len(xs)) :
             print ('[fit_params, central_pix, fit_width, len(xs)] = ' + str([fit_params, central_pix, fit_width, len(xs)]))
             print ('One of the passed single-fitting line parameters was a nan.  That is not an acceptable set of parameters.  Returning an infinite fit result: ')
             return np.inf
-            #if np.isnan(fit_params[1]):
-            #    fit_params[1] = 0.0
-            #    fit_width=0.0
-            #    print ('Reassigning a nan value in the fit params to 0... ')
         fit_indeces = [max(int(central_pix - fit_width), 0), min(int(central_pix + fit_width) + 1, len(xs) - 1)]
         sub_xs = xs[fit_indeces[0]:fit_indeces[1]]
         sub_ys = ys[fit_indeces[0]:fit_indeces[1]]
         fit_ys = fit_funct(sub_xs, *fit_params)
         fit_res = np.sqrt(np.sum((fit_ys - np.array(sub_ys)) ** 2.0))
-
         #print ('[fit_params, fit_res] = ' + str([fit_params, fit_res] ))
         #plt.scatter(sub_xs, sub_ys)
         #plt.plot(sub_xs, fit_ys)
         #plt.draw()
         #plt.pause(0.1)
         #plt.close('all')
-
         return fit_res
 
 
     def fitSingleLine(self, xs, ys, init_guess, fit_width = 2, bounds = ([0.0, 0.0, 0.0, 0.0, -np.inf], [np.inf, np.inf, np.inf, np.inf, np.inf]), show_fit = 0, pedestal = 1, width_from_focus_funct = 0, seeing_fit_funct = None, verbose = 0):
-        #print ('!!!fit width = ' + str(fit_width) + '!!!')
+        """
+        Fit a single line to a section of the 1d OSELOTS spectrum.  The user has some autonomy
+           here.  If pedestal is set to 1, the fit is performed with an additional zero-level.
+           Otherwise, the fit assumes that the continuum has been approximately removed/that
+           the background is not too significant to the fit.  The seeing can also be a free
+           parameter or assumed to conform to an image-wide fit.
+        The fit is a standard minimizing sum-of-square differences.
+        If the user has set the show_fit flag to 1, then the system retuns enough data to make
+            the plot in the main call (so that all fitted lines can be shown on the same)
+            image.  Otherwise, just the fit is returned.
+        """
         if width_from_focus_funct and seeing_fit_funct == None:
             seeing_fit_funct = self.seeing_fit_funct
-        #print ('bounds = ' + str(bounds))
         if pedestal:
             if width_from_focus_funct:
                 init_guess = [init_guess[0], init_guess[1], init_guess[3] ]
@@ -307,16 +507,21 @@ class SpectrumProcessor:
         #    just_gauss_fit = plt.plot(xs, fit_funct(xs, *init_guess), c = 'red')
 
         bounds = [(bounds[0][i], bounds[1][i]) for i in range(len(bounds[0]))]
-        #print ('[init_guess, bounds] = ' + str([init_guess, bounds] ))
+        if np.any( [bounds[i][0] >= bounds[i][1] for i in range(len(bounds[0]))] ):
+            print ('init_guess = ' + str(init_guess))
+            print ('bounds = ' + str(bounds))
+            print('[bounds[i][0] >= bounds[i][1] for i in range(len(bounds[0]))] = ' + str([bounds[i][0] >= bounds[i][1] for i in range(len(bounds[0]))]))
         if np.any(np.isnan(init_guess)): print ('[init_guess, bounds] = ' + str([init_guess, bounds]))
         #if verbose: print ('[fit_width, fit_funct, fit_params, init_guess] = ' + str([fit_width, fit_funct, init_guess] ))
-        fit_res = optimize.minimize(lambda fit_params: self.SingleLineFunctionToMinimize(xs, ys, fit_width, fit_funct, fit_params), init_guess, bounds = bounds)
+        minim_res = optimize.minimize(lambda fit_params: self.SingleLineFunctionToMinimize(xs, ys, fit_width, fit_funct, fit_params), init_guess, bounds = bounds)
         #fit_res = optimize.minimize(lambda params: np.sqrt(np.sum((fit_funct(fit_xs[params[1] - fit_width:params[1] + fit_width + 1]) - np.array(fit_ys[params[1] - fit_width:params[1] + fit_width + 1])) ** 2.0)), init_guess)
-        fit_res = fit_res['x'].tolist()
+        fit_res = minim_res['x'].tolist()
         if np.any(np.isnan(fit_res)):
             print ('Fitted line returned a nan.  We will reassign to the initial guess: ')
             fit_res = init_guess
-        #print ('fit_res = ' + str(fit_res))
+        #If the returned best fit line has a height is below the lower bound, there was a flaw in our fit and we need to correct:
+        if fit_res[0] < bounds[0][0]:
+            fit_res[0] = bounds[0][0]
         """
         try:
             #fit_res = optimize.curve_fit(fit_funct, fit_xs, fit_ys, p0 = init_guess, bounds = bounds)[0].tolist()
@@ -363,22 +568,31 @@ class SpectrumProcessor:
     def identifyLinesOnSlice(self, xs, ys,
                              max_line_fit_width = None, peak_guesses = [], show_spec = 0, verbose = 1 ,
                              fit_lines_with_pedestal = 1, fit_line_width_with_seeing_funct = 0,
-                             seeing_fit_funct = None  ):
-
+                             seeing_fit_funct = None, background_bin_width = 10 ):
+        """
+        Takes in a 1d spectrum (in the form of pixels or wavelengths as the x-variable and
+            intensities as the y variable) and identifies lines in that spectrum.  The lines
+            are identified by looking for peaks that are sufficiently deviant (sufficiently
+            being indicated with the n_pix_above_thresh_for_new_line_in_slice parameter of
+            the class).
+        The function returns a list of line fits, each of which is a list of the following
+            parameters: [Gaussian height, Gaussian mu, Gaussian sigma, pedestal level,
+            the sum of square result at the best fit, the sum of squares if we have no lines].
+            Those last two are useful diagnostic values, and are not used when using the
+            fitted lines to extract values down the line.
+        """
         std_thresh = self.std_thresh_for_new_line
         init_fit_width_guess = self.init_seeing_guess
 
         if max_line_fit_width == None:
             max_line_fit_width = self.width_pix_sample_to_fit_line
         n_pix_above_thresh = self.n_pix_above_thresh_for_new_line_in_slice
-        background_bin_width = self.background_bin_width_for_line_id_in_slice
         search_width = self.centroid_adjust_size
         if len(peak_guesses) == 0:
             n_pix = len(xs)
             bg_from_binning = [np.median(ys[max(i - int(background_bin_width / 2), 0):min(i + int(background_bin_width / 2 + 0.5), n_pix)]) for i in range(n_pix)]
             bg_ys = ([ys[i] - bg_from_binning[i] for i in range(n_pix)])
             bg_ys_med = np.median(bg_ys)
-            bg_ys_std = np.std(bg_ys)
             bg_ys_std = [np.std(bg_ys[max(i - int(background_bin_width / 2), 0):min(i + int(background_bin_width / 2 + 0.5), n_pix)]) for i in range(n_pix)]
             pix_vals_above_std = [pix for pix in xs[1:-1] if bg_ys[pix] > bg_ys_med + std_thresh * bg_ys_std[pix]]
             #Our guesses for the centers of ghost lines are those pixels that are both part of a group of pixels that are some threshold above the noise and are local extremum
@@ -394,6 +608,7 @@ class SpectrumProcessor:
             print ('n_peak_guesses = ' + str(n_peak_guesses))
         line_fits = [0 for peak in peak_guesses]
         if show_spec:
+            plt.close('all')
             fig = plt.figure(figsize = self.default_figsize)
             spec_plot = plt.plot(xs, ys, c = 'blue')[0]
             plt.xlabel('Pixel number (column)')
@@ -401,18 +616,6 @@ class SpectrumProcessor:
             plt.title('Fits to IDed lines on spectrum slice')
         for j in range(0, n_peak_guesses ):
             peak_guess = peak_guesses[j]
-            #if n_peak_guesses == 1:
-            #    fit_xs = list( range(max(int(peak_guess - max_line_fit_width), xs[0]),
-            #                         min(int(peak_guess + max_line_fit_width) + 1, n_pix)) )
-            #elif j == 0:
-                #fit_xs = list( range(max(int(peak_guess - max_line_fit_width), 0),
-                #                     min(int(peak_guess + max_line_fit_width), int(peak_guess + peak_guesses[j+1]) // 2, xs[-1])) )
-            #elif j == n_peak_guesses - 1:
-            #    fit_xs = list( range(max(int(peak_guess - max_line_fit_width), int(peak_guesses[j-1] + peak_guesses[j]) // 2, xs[0]),
-            #                     min(int(peak_guess + max_line_fit_width), xs[-1])) )
-            #else:
-            #    fit_xs = list( range(max(int(peak_guess - max_line_fit_width), int(peak_guesses[j-1] + peak_guess) // 2, xs[0]),
-            #                     min(int(peak_guess + max_line_fit_width), int(peak_guess + peak_guesses[j+1]) // 2, xs[-1])) )
             fit_xs = list( range(max(int(peak_guess - max_line_fit_width), xs[0]),
                                       min(int(peak_guess + max_line_fit_width) + 1, xs[-1])) )
             fit_index_range = [fit_xs[0] - xs[0], fit_xs[-1] - xs[0]]
@@ -423,12 +626,22 @@ class SpectrumProcessor:
                 print ('[peak_guess, max_line_fit_width, j, n_peak_guesses, peak_guesses, len(xs)] = ' + str([peak_guess, max_line_fit_width, j, n_peak_guesses, peak_guesses, len(xs)]))
             fit_ys = ys[fit_index_range[0]:fit_index_range[-1] + 1]
             #print ('[fit_xs, fit_ys] = ' + str([fit_xs, fit_ys]))
-            init_guess = [max(fit_ys), peak_guess, init_fit_width_guess, 0.0, 0.0 ]
+            init_guess = [max(max(fit_ys), 0.1), peak_guess, init_fit_width_guess, 0.0, 0.0 ]
             lower_bounds = [-np.inf, init_guess[1] - search_width, 0.2, -np.inf, -np.inf ]
-            lower_bounds = [min(lower_bounds[i], init_guess[i]) for i in range(len(init_guess))]
+            #lower_bounds = [min(lower_bounds[i], init_guess[i], 0.0) for i in range(len(init_guess))]
+            lower_bounds = [max(min(lower_bounds[i], init_guess[i]), 0.0) for i in range(len(init_guess))]
             upper_bounds = [2.0 * init_guess[0], init_guess[1] + search_width, 10.0, init_guess[1] + init_guess[3], np.inf]
             upper_bounds = [max(upper_bounds[i], init_guess[i]) for i in range(len(init_guess))]
+            if verbose:
+                print ('fit_xs = ' + str(fit_xs))
+                print ('fit_ys = ' + str(fit_ys))
+                print ('init_guess = ' + str(init_guess))
+                print ('lower_bounds = ' + str(lower_bounds))
+                print ('upper_bounds = ' + str(upper_bounds))
+                print ('search_width = ' + str(search_width) )
+                print ('max_line_fit_width = ' + str(max_line_fit_width))
             if show_spec:
+                #line_fits_and_plots = self.fitSingleLine(fit_xs, fit_ys, init_guess, fit_width = max_line_fit_width, bounds = (lower_bounds, upper_bounds), show_fit = show_spec, pedestal = fit_lines_with_pedestal, width_from_focus_funct = fit_line_width_with_seeing_funct, seeing_fit_funct = seeing_fit_funct, verbose = verbose)
                 line_fits_and_plots = self.fitSingleLine(xs, ys, init_guess, fit_width = max_line_fit_width, bounds = (lower_bounds, upper_bounds), show_fit = show_spec, pedestal = fit_lines_with_pedestal, width_from_focus_funct = fit_line_width_with_seeing_funct, seeing_fit_funct = seeing_fit_funct, verbose = verbose)
                 just_gauss_fit, gauss_on_pedestal_fit, line_fits[j] = [line_fits_and_plots, line_fits_and_plots, line_fits_and_plots[-1]]
                 #fit_funct = lambda xs, A, mu, sig, shift, : A * np.exp(-(mu - np.array(xs)) ** 2.0 / (2.0 * sig ** 2.0)) + shift + 0.0 * (np.array(xs) - np.mean(xs))
@@ -436,6 +649,7 @@ class SpectrumProcessor:
                 #plt.plot(fit_xs, fit_funct(fit_xs, *(init_guess[0:4])), c = 'orange')
             else:
                 #if verbose: print('init_guess = ' + str(init_guess))
+                #line_fits[j] = self.fitSingleLine(fit_xs, fit_ys, init_guess, fit_width = max_line_fit_width, bounds = (lower_bounds, upper_bounds), show_fit = show_spec, pedestal = fit_lines_with_pedestal, width_from_focus_funct = fit_line_width_with_seeing_funct, seeing_fit_funct = seeing_fit_funct, verbose = verbose)
                 line_fits[j] = self.fitSingleLine(xs, ys, init_guess, fit_width = max_line_fit_width, bounds = (lower_bounds, upper_bounds), show_fit = show_spec, pedestal = fit_lines_with_pedestal, width_from_focus_funct = fit_line_width_with_seeing_funct, seeing_fit_funct = seeing_fit_funct, verbose = verbose)
         if n_peak_guesses < 1:
             just_gauss_fit = plt.plot(np.nan, np.nan, '-', color = 'red')[0]
@@ -443,7 +657,7 @@ class SpectrumProcessor:
             line_fits = []
 
         if show_spec:
-            print ('[spec_plot, just_gauss_fit, gauss_on_pedestal_fit] = ' + str([spec_plot, just_gauss_fit, gauss_on_pedestal_fit]))
+            #print ('[spec_plot, just_gauss_fit, gauss_on_pedestal_fit] = ' + str([spec_plot, just_gauss_fit, gauss_on_pedestal_fit]))
             if n_peak_guesses >= 1:
                 plt.legend([spec_plot, just_gauss_fit, gauss_on_pedestal_fit], ['Spectrum on slice', 'Just line fits', 'Line + pedestal fits'])
             else:
@@ -452,8 +666,8 @@ class SpectrumProcessor:
             #plt.draw()
             #plt.pause(0.1)
             #plt.close('all')
-            plt.show()
-        #print ('line_fits = ' + str(line_fits))
+            plt.draw()
+            plt.pause(1)
         return line_fits
 
     def extendLinesIntoImage(self, range_to_extend, line_extensions, data_to_search, ref_line_ends,
@@ -461,7 +675,19 @@ class SpectrumProcessor:
                              max_frac_intensity_per_pix = 0.1, line_bg_width = 10,
                              max_seq_fit_failures = 3, max_seq_extreme_amps = 5,
                              bound_tolerance = 0.01):
-
+        """
+        When attempting to identify lines across the spectral range of an image, we sometimes
+            miss sections where the line is undersampled.  Our method to fixing this problem
+            is by "extending" lines that are identified only over a portion of the spectrum
+            into the full spectral range.  This function performs that "extension."
+        This extension is performed by moving row-by-row beyond the fitted line and looking
+            for spectral peaks (with less required S/N) within a range of the original
+            fitted line. The fit has a tolerance for a number of rows in which the fit can
+            fail beore it gives up trying to extend the line.  It also has a maximum number
+            of times that the fit can land outside of some bounds, to protect against
+            identifying a different spectral line as an extension of the spectral line of
+            interest.
+        """
         max_frac_intensity_per_pix = 0.2
         n_failures = [0 for line in line_extensions]
         n_extreme_amps = [0 for line in line_extensions]
@@ -524,27 +750,37 @@ class SpectrumProcessor:
     #Identify a line is a series of count peaks along many adjacent lines
     # Hopefully, by requiring degree of continuity, we'll be able to reject things like cosmic rays.
     def identifyContinuousLines(self, pix_vals, lines_by_slice, data_to_search,
+                                plot_title = 'Fitted lines',
                                 max_sep_per_pix = 5.0, max_frac_intensity_per_pix = 0.1, min_detections = 10,
                                 fit_line_center_index = 1, image_range_to_search = None,
                                 binning_search_width = 1, line_bg_width = 10, show_start_line_fits = 1):
+        """
+        Takes in a series of fits of lines in individual spectral slices (usually an averaging of several
+            rows) and attempts to stitch them together into a series of continous lines.
+        This stitching is done by looking for line fits with a similar centroid position to lines
+            identified on the previous slice.  Once this initial matching is done, the function attempts
+            to extend partial lines by re-searching for line signals within the spectral range, this time
+            with less required S/N than when the lines are first identified.
+        """
         continuous_lines = []
         #First, trace out the lines only where they were detected
         #print ('lines_by_slice = ' + str(lines_by_slice))
         for i in range(len(lines_by_slice)):
-
+            prev_continuous_lines = continuous_lines[:]
             pix_val = pix_vals[i]
             lines_in_slice = lines_by_slice[i]
             for line in lines_in_slice:
                 #line = line.tolist()
                 if line[fit_line_center_index] >= 0:
                     matched_to_line = 0
-                    for j in range(len(continuous_lines)):
-                        continuous_line = continuous_lines[j]
-                        if abs(continuous_line[-1][fit_line_center_index+1] - line[fit_line_center_index]) < max_sep_per_pix:
-                           #print ('here1')
-                            continuous_lines[j] = continuous_line + [[pix_val] + line]
+                    #Find the closest previously matched line, see if it is close enough.
+                    #  If it is, lengthen it.  If it isn't, start a new line.
+                    if len(prev_continuous_lines) > 0:
+                        new_line_dists_from_prev_lines = [ abs(continuous_line[-1][fit_line_center_index+1] - line[fit_line_center_index]) for continuous_line in prev_continuous_lines ]
+                        closest_line_index = np.argmin(new_line_dists_from_prev_lines)
+                        if new_line_dists_from_prev_lines[closest_line_index] < max_sep_per_pix:
+                            continuous_lines[closest_line_index] = continuous_lines[closest_line_index] + [[pix_val] + line]
                             matched_to_line = 1
-                            break
                     if not(matched_to_line):
                         #print ('here2')
                         continuous_lines = continuous_lines + [[[pix_val] + line]]
@@ -569,6 +805,9 @@ class SpectrumProcessor:
         if show_start_line_fits:
             for continuous_line in continuous_lines:
                 plt.plot([point[2] for point in continuous_line], [point[0] for point in continuous_line])
+                plt.xlabel('Column (pix)')
+                plt.ylabel('Row (pix)')
+                plt.title(plot_title)
             plt.show()
 
         continuous_lines = [ line for line in continuous_lines if len(line) >= min_detections ]
@@ -577,6 +816,16 @@ class SpectrumProcessor:
 
 
     def consolidateLines(self, line_indeces):
+        """
+        Takes in a list of line locations and smoothing widths describing the
+            identified lines in a 1d spectrum, at a variety of smoothings and
+            consolidates that list into a single list of discrete lines.
+        Assuming that lines that are sufficiently close together are in fact
+           the same line (identified at different smoothings), the function
+           consolidates the full list of lines down to a list of unique lines.
+           In this matching procedure, priority is given to lines identified
+           with smaller widths.
+        """
         min_n_sig_sep = self.min_sig_sep_for_distinct_lines
         line_widths = can.niceReverse(sorted(line_indeces.keys()))
         #print ('pre consolidation line_indeces: ' + str(line_indeces))
@@ -625,43 +874,49 @@ class SpectrumProcessor:
             prev_line_merged = 0
             for line_to_merge in lines_to_merge:
                 line_too_close_to_existing_line = [abs(line_to_merge[0] - line[0]) / (np.sqrt(line[2] ** 2.0 + width ** 2.0) / 2.0) < min_n_sig_sep for line in full_merged_lines]
-                #print('line_too_close_to_existing_line = ' + str(line_too_close_to_existing_line))
                 if np.any(line_too_close_to_existing_line):
-                    #print ('np.where(line_too_close_to_existing_line) = ' + str(np.where(line_too_close_to_existing_line)))
-                    #print('np.where(line_too_close_to_existing_line).tolist() = ' + str(np.where(line_too_close_to_existing_line).tolist() ))
-                    #[i for i in range(len(line_too_close_to_existing_line))]
-                    #print ('line_to_merge, ' + str(line_to_merge) + ', too close to lines: ' + str( [i for i in range(len(line_too_close_to_existing_line))] ))
                     if line_to_merge[1] > full_merged_lines[ [i for i in range(len(line_too_close_to_existing_line))][0] ][1]:
-                         #print ('[line_too_close_to_existing_line, line_to_merge, width] = ' + str([line_too_close_to_existing_line, line_to_merge, width]))
                          line_too_close_to_existing_line_indeces = [i for i in range(len(line_too_close_to_existing_line)) if line_too_close_to_existing_line[i]]
-                         #print('np.where(line_too_close_to_existing_line) = ' + str(np.where(line_too_close_to_existing_line) ))
-                         #print('line_too_close_to_existing_line_indeces = ' + str(line_too_close_to_existing_line_indeces))
-                         #print('line_too_close_to_existing_line_indeces[0] = ' + str(line_too_close_to_existing_line_indeces[0]))
                          full_merged_lines[int(line_too_close_to_existing_line_indeces[0])] = line_to_merge + [width]
-                    #else:
-                    #    print ('Throwing out line ' + str(line_to_merge))
                 else:
                     full_merged_lines = full_merged_lines + [line_to_merge + [width]]
-        #print('full_merged_lines = ' + str(full_merged_lines))
 
         return full_merged_lines
 
 
-
     def detectLinesCentersInOneD(self, pixel_vals, spec_slice, stat_slice,
-                                 spec_smoothing = 20, spec_grad_rounding = 5, n_std_for_line = 5,
-                                 show = 0, ):
+                                 spec_grad_rounding = 5, n_std_for_line = 5,
+                                 show = 0, background_bin_width = 10,
+                                 convolve_widths = np.arange(1.0, 3.0, 1.0) ):
+        """
+        Looks for significant emission and absorption lines in a 1D spectrum by
+            detecting zero-crossings in the first derivative of the spectrum
+            with values left and right of the zero-crossing that are
+            sufficiently disparate from 0.  Sufficiently disparate is based on
+            a the standard deviations measured from a slice of the spectrum from
+            which statistics are computed (the 'stat_slice') and the n_std_for_line
+            parameter.
+        This search is performed on the spectrum at a range of smoothings.  This is
+            done because different lines are best detected with different smoothings,
+            particularly when the focus varies with incident wavelength.
+        After the lines are picked out at a variety of smoothings (indicated with the
+            convolve_widths parameter), they are consolidated into a single set of lines,
+            by assuming that sufficiently proximate identified lines are in fact the
+            same line.  This is done because strong lines are often detected at many
+            smoothing levels.
+        """
         spec_derivs = np.gradient(spec_slice)
         spec_derivs = np.around(spec_derivs, spec_grad_rounding)
 
         stat_derivs = np.gradient(stat_slice)
+
         stat_derivs = np.around(stat_derivs, spec_grad_rounding)
         deriv_median = np.median(stat_derivs)
         deriv_std = np.std(stat_derivs)
+        deriv_std_dict = {pixel_vals[i]: np.std(stat_derivs[max(i - int(background_bin_width / 2), 0):min(i + int(background_bin_width / 2 + 0.5), len(stat_derivs))]) for i in range(len(stat_derivs))}
 
         #deriv_median = np.median(spec_derivs)
         #deriv_std = np.std(spec_derivs)
-        print ('[len(pixel_vals), len(spec_slice), len(stat_slice), len(spec_derivs), len(stat_derivs)] = ' + str([len(pixel_vals), len(spec_slice), len(stat_slice), len(spec_derivs), len(stat_derivs)]) )
         deriv_emission_crossing_indeces = [i for i in range(len(pixel_vals[1:-1])) if (spec_derivs[i] >= 0.0 and spec_derivs[i + 1 ] < 0.0 )  ]
         deriv_absorbtion_crossing_indeces = [i for i in range(len(pixel_vals[1:-1])) if (spec_derivs[i] <= 0.0 and spec_derivs[i + 1 ] > 0.0 ) ]
         emission_deriv_turns = [[-1, -1] for cross in deriv_emission_crossing_indeces]
@@ -693,29 +948,21 @@ class SpectrumProcessor:
             absorbtion_deriv_turns[j] = [left_peak, right_peak]
 
         absorbtion_indeces = [(absorbtion_deriv_turns[j][0] + absorbtion_deriv_turns[j][1]) // 2 for j in range(len(deriv_absorbtion_crossing_indeces))
-                                     if ( abs(spec_derivs[absorbtion_deriv_turns[j][0]] - deriv_median) / deriv_std >= n_std_for_line
-                                          and abs(spec_derivs[absorbtion_deriv_turns[j][1]] - deriv_median) / deriv_std >= n_std_for_line )
+                                     if ( abs(spec_derivs[absorbtion_deriv_turns[j][0]] - deriv_median) / deriv_std_dict[pixel_vals[(absorbtion_deriv_turns[j][0] + absorbtion_deriv_turns[j][1]) // 2]] >= n_std_for_line
+                                          and abs(spec_derivs[absorbtion_deriv_turns[j][1]] - deriv_median) / deriv_std_dict[pixel_vals[(absorbtion_deriv_turns[j][0] + absorbtion_deriv_turns[j][1]) // 2]] >= n_std_for_line )
                                     ]
         #absorbtion_indeces = [(absorbtion_deriv_turns[j][0] + absorbtion_deriv_turns[j][1]) // 2 for j in range(len(deriv_absorbtion_crossings))
         #                             if ( abs(spec_derivs[absorbtion_deriv_turns[j][0]] - deriv_median) / deriv_std
         #                                  + abs(spec_derivs[absorbtion_deriv_turns[j][1]] - deriv_median) / deriv_std ) >= n_std_for_line * 2
         #                            ]
         emission_indeces = [(emission_deriv_turns[j][0] + emission_deriv_turns[j][1]) // 2 for j in range(len(deriv_emission_crossing_indeces))
-                                   if ( abs(spec_derivs[emission_deriv_turns[j][0]] - deriv_median) / deriv_std >= n_std_for_line
-                                        and abs(spec_derivs[emission_deriv_turns[j][1]] - deriv_median) / deriv_std >= n_std_for_line )
+                                   if ( abs(spec_derivs[emission_deriv_turns[j][0]] - deriv_median) / deriv_std_dict[pixel_vals[(emission_deriv_turns[j][0] + emission_deriv_turns[j][1]) // 2]] >= n_std_for_line
+                                        and abs(spec_derivs[emission_deriv_turns[j][1]] - deriv_median) / deriv_std_dict[pixel_vals[(emission_deriv_turns[j][0] + emission_deriv_turns[j][1]) // 2]] >= n_std_for_line )
                                   ]
         #emission_indeces = [(emission_deriv_turns[j][0] + emission_deriv_turns[j][1]) // 2 for j in range(len(deriv_emission_crossings))
         #                           if ( abs(spec_derivs[emission_deriv_turns[j][0]] - deriv_median) / deriv_std
         #                               +  abs(spec_derivs[emission_deriv_turns[j][1]] - deriv_median) / deriv_std) >= n_std_for_line * 2
         #                          ]
-
-        ref_spec = np.convolve(spec_slice, np.ones(spec_smoothing) / spec_smoothing, mode = 'same')
-        gaussian_deriv = lambda xs, A, mu, sig: A * np.exp(-(xs - mu) ** 2.0 / (2.0 * sig ** 2.0)) * -2.0 * (xs - mu) / (2.0 * sig ** 2.0)
-        #ref_spec_deriv0p5 = np.convolve(spec_slice, gaussian_deriv(np.linspace(-5.0, 5.0, 11), 1.0, 0.0, 0.5), mode = 'same')
-        #ref_spec_deriv1 = np.convolve(spec_slice, gaussian_deriv(np.linspace(-5.0, 5.0, 11), 1.0, 0.0, 1.0), mode = 'same')
-        #ref_spec_deriv1p5 = np.convolve(spec_slice, gaussian_deriv(np.linspace(-5.0, 5.0, 11), 1.0, 0.0, 1.5), mode = 'same')
-        #ref_spec_deriv2 = np.convolve(spec_slice, gaussian_deriv(np.linspace(-5.0, 5.0, 11), 1.0, 0.0, 2.0), mode = 'same')
-        convolve_widths = np.arange(1.0, 3.0, 1.0)
         emission_line_indeces = {width:[] for width in convolve_widths}
         absorbtion_line_indeces = {width:[] for width in convolve_widths}
         if show:
@@ -731,10 +978,11 @@ class SpectrumProcessor:
             bg_spec_deriv = [np.sum(stat_derivs * gaussian_deriv(np.array(range(len(spec_slice))), 1.0, mu, width)) for mu in range(len(spec_slice))]
             bg_spec_deriv_std = np.std(bg_spec_deriv[self.bg_std_buffer:-self.bg_std_buffer])
             bg_spec_deriv_std = can.sigClipStd(bg_spec_deriv[self.bg_std_buffer:-self.bg_std_buffer], sig_clip = self.bg_sig_clip)
-            emission_line_indeces[width] = can.consolidateList([i  for i in range(len(ref_spec_deriv)) if ref_spec_deriv[i] / bg_spec_deriv_std >  n_std_for_line])
-            emission_line_indeces[width] = [[i + pixel_vals[0], ref_spec_deriv[i] / bg_spec_deriv_std] for i in emission_line_indeces[width]]
-            absorbtion_line_indeces[width] = can.consolidateList([i for i in range(len(ref_spec_deriv)) if ref_spec_deriv[i] / bg_spec_deriv_std < -n_std_for_line ])
-            absorbtion_line_indeces[width] = [[i + pixel_vals[0], ref_spec_deriv[i] / bg_spec_deriv_std] for i in absorbtion_line_indeces[width]]
+            bg_spec_deriv_std_dict = {i: np.std(bg_spec_deriv[max(i - int(background_bin_width / 2), 0):min(i + int(background_bin_width / 2 + 0.5), len(bg_spec_deriv))]) for i in range(len(bg_spec_deriv))}
+            emission_line_indeces[width] = can.consolidateList([i for i in range(len(ref_spec_deriv)) if ref_spec_deriv[i] / bg_spec_deriv_std_dict[i] >  n_std_for_line])
+            emission_line_indeces[width] = [[i + pixel_vals[0], ref_spec_deriv[i] / bg_spec_deriv_std_dict[i]] for i in emission_line_indeces[width]]
+            absorbtion_line_indeces[width] = can.consolidateList([i for i in range(len(ref_spec_deriv)) if ref_spec_deriv[i] / bg_spec_deriv_std_dict[i] < -n_std_for_line ])
+            absorbtion_line_indeces[width] = [[i + pixel_vals[0], ref_spec_deriv[i] / bg_spec_deriv_std_dict[i]] for i in absorbtion_line_indeces[width]]
             if show:
                 spec_deriv_line = axarr[i+1].plot(pixel_vals, ref_spec_deriv, c = 'g')[0]
                 bg_deriv_line = axarr[i+1].plot(pixel_vals, bg_spec_deriv, c = 'r')[0]
@@ -749,49 +997,6 @@ class SpectrumProcessor:
             plt.show()
         merged_emission_line_indeces = self.consolidateLines(emission_line_indeces)
         merged_absorbtion_line_indeces = self.consolidateLines(absorbtion_line_indeces)
-        #We have an issue where peaks and troughs can be
-        ##########
-        #FILL ME IN
-        ##########
-        """
-        ref_spec_deriv1_mine = [np.sum(spec_derivs * gaussian_deriv(np.array(pixel_vals), 1.0, mu, 1.0)) for mu in range(len(spec_slice))]
-        bg_spec_deriv1_mine = [np.sum(stat_derivs * gaussian_deriv(np.array(pixel_vals), 1.0, mu, 1.0)) for mu in range(len(spec_slice))]
-        ref_spec_deriv3_mine = [np.sum(spec_derivs * gaussian_deriv(np.array(pixel_vals), 1.0, mu, 3.0)) for mu in range(len(spec_slice))]
-        bg_spec_deriv3_mine = [np.sum(stat_derivs * gaussian_deriv(np.array(pixel_vals), 1.0, mu, 3.0)) for mu in range(len(spec_slice))]
-        ref_spec_deriv5_mine = [np.sum(spec_derivs * gaussian_deriv(np.array(pixel_vals), 1.0, mu, 5.0)) for mu in range(len(spec_slice))]
-        bg_spec_deriv5_mine = [np.sum(stat_derivs * gaussian_deriv(np.array(pixel_vals), 1.0, mu, 5.0)) for mu in range(len(spec_slice))]
-        ref_spec_deriv20_mine = [np.sum(spec_derivs * gaussian_deriv(np.array(pixel_vals), 1.0, mu, 20.0)) for mu in range(len(spec_slice))]
-        bg_spec_deriv20_mine = [np.sum(stat_derivs * gaussian_deriv(np.array(pixel_vals), 1.0, mu, 20.0)) for mu in range(len(spec_slice))]
-        """
-        #ref_spec_deriv3 = np.convolve(spec_slice, gaussian_deriv(np.linspace(-5.0, 5.0, 11), 1.0, 0.0, 3.0), mode = 'same')
-        """
-        f, axarr = plt.subplots(5,1, figsize = self.default_figsize)
-        axarr[0].plot(range(len(spec_slice)), spec_derivs, c = 'g')
-        axarr[0].plot(range(len(spec_slice)), stat_derivs, c = 'r')
-        axarr[0].plot(range(len(spec_slice)), 0.0 * np.array(range(len(spec_slice))) + 20 * np.std(stat_derivs), c = 'k')
-        axarr[0].plot(range(len(spec_slice)), 0.0 * np.array(range(len(spec_slice))) - 20 * np.std(stat_derivs), c = 'k')
-        #axarr[1].plot(range(len(spec_slice)), ref_spec_deriv0p5, c = 'purple')
-        axarr[1].plot(range(len(spec_slice)), ref_spec_deriv1_mine, c = 'g')
-        axarr[1].plot(range(len(spec_slice)), bg_spec_deriv1_mine, c = 'r')
-        axarr[1].plot(range(len(spec_slice)), 0.0 * np.array(range(len(spec_slice))) + 20 * np.std(bg_spec_deriv1_mine), c = 'k')
-        axarr[1].plot(range(len(spec_slice)), 0.0 * np.array(range(len(spec_slice))) - 20 * np.std(bg_spec_deriv1_mine), c = 'k')
-        #axarr[1].plot(range(len(spec_slice)), ref_spec_deriv1p5, c = 'orange')
-        axarr[2].plot(range(len(spec_slice)), ref_spec_deriv3_mine, c = 'g')
-        axarr[2].plot(range(len(spec_slice)), bg_spec_deriv3_mine, c = 'r')
-        axarr[2].plot(range(len(spec_slice)), 0.0 * np.array(range(len(spec_slice))) + 20 * np.std(bg_spec_deriv3_mine), c = 'k')
-        axarr[2].plot(range(len(spec_slice)), 0.0 * np.array(range(len(spec_slice))) - 20 * np.std(bg_spec_deriv3_mine), c = 'k')
-        axarr[3].plot(range(len(spec_slice)), ref_spec_deriv5_mine, c = 'g')
-        axarr[3].plot(range(len(spec_slice)), bg_spec_deriv5_mine, c = 'r')
-        axarr[3].plot(range(len(spec_slice)), 0.0 * np.array(range(len(spec_slice))) + 20 * np.std(bg_spec_deriv5_mine), c = 'k')
-        axarr[3].plot(range(len(spec_slice)), 0.0 * np.array(range(len(spec_slice))) - 20 * np.std(bg_spec_deriv5_mine), c = 'k')
-        axarr[4].plot(range(len(spec_slice)), ref_spec_deriv20_mine, c = 'g')
-        axarr[4].plot(range(len(spec_slice)), bg_spec_deriv20_mine, c = 'r')
-        axarr[4].plot(range(len(spec_slice)), 0.0 * np.array(range(len(spec_slice))) + 20 * np.std(bg_spec_deriv20_mine), c = 'k')
-        axarr[4].plot(range(len(spec_slice)), 0.0 * np.array(range(len(spec_slice))) - 20 * np.std(bg_spec_deriv20_mine), c = 'k')
-        #axarr[1].plot(range(len(spec_slice)), ref_spec_deriv3, c = 'blue')
-        #plt.plot(range(len(spec_slice)), spec_slice - ref_spec, c = 'c')
-        plt.show()
-        """
 
         if show:
             f, axarr = plt.subplots(2,1, figsize = self.default_figsize)
@@ -800,13 +1005,8 @@ class SpectrumProcessor:
             bg = axarr[0].plot(pixel_vals, stat_slice, c = 'red')[0]
             em_line = None
             ab_line = None
-            #for line in emission_indeces: em_line = axarr[0].axvline(line, color = 'green')
-            #for line in can.flattenListOfLists([emission_line_indeces[width] for width in emission_line_indeces.keys()]): em_line = axarr[0].axvline(line[0], color = 'cyan', linestyle = 'dotted')
-            #for line in absorbtion_indeces: ab_line = axarr[0].axvline(line, color = 'orange')
             for line in merged_absorbtion_line_indeces: ab_line = axarr[0].axvline(line[0], color = 'orange', linestyle = ':')
             for line in merged_emission_line_indeces: em_line = axarr[0].axvline(line[0], color = 'green', linestyle = ':')
-            #for line in can.flattenListOfLists([absorbtion_line_indeces[width] for width in absorbtion_line_indeces.keys()]): ab_line = axarr[0].axvline(line[0], color = 'magenta', linestyle = 'dotted')
-            #axarr[0].legend([spec, bg, em_line, ab_line], ['Spectrum binned by col', 'Background','Emission lines', 'absorbtion_lines'])
             if em_line is None:
                 if ab_line is None:
                     axarr[0].legend([spec, bg,], ['Spectrum from binned columns', 'Background'])
@@ -844,10 +1044,22 @@ class SpectrumProcessor:
                             max_line_fit_width = 20, parallel_smoothing = 1,
                             n_pix_above_thresh = 1, width_guess = 3,
                             show_process = 0, spec_grad_rounding = 5,
-                            draw_stats_below = 1, stat_region_buffer = 10,
+                            draw_stats_below = 1, stat_region_buffer = 10, freq_of_plot_single_row_fits = 5,
                             fit_lines_with_pedestal = 1, fit_line_width_with_seeing_funct = 0 ):
+        """
+        Given a 2d spectrum (image) and a range of rows to search, this function
+            attempts to trace spectral lines over that column range.  It searches
+            for lines in some averaging of adjecent rows (indicated with the
+            coarse_search_binning parameter) that are a certain number of
+            standard deviations above some statistical level (drawn from a region
+            indicated by the stat_region_buffer).
 
-        print ('[search_range, coarse_search_binning] = ' + str([search_range, coarse_search_binning]))
+        This is the core function for generating a 2d model of lines in a spectrum.
+           These 2d line traces are then used to determine how the spectrum curves
+           in an image.  This curvature is then used to integrate the actual
+           spectrum along the curvature, and then lines are searched for on that
+           integrated spectrum.
+        """
         coarse_pix_vals = list(range(int(search_range[0]), int(search_range[1]) , coarse_search_binning))
         coarse_fit_grid = {pix_val:[] for pix_val in coarse_pix_vals}
         if draw_stats_below:
@@ -859,6 +1071,9 @@ class SpectrumProcessor:
             stat_slice = image[stat_region[0]:stat_region[1], :]
         else:
             stat_slice = image[:, stat_region[0]:stat_region[1]]
+        print ('stat_region = ' + str(stat_region))
+        print ('stat_slice = ' + str(stat_slice))
+        plt.imshow(image)
         if coarse_search_binning > 1:
             stat_slice = np.sum(stat_slice, axis = self.spec_axis)
 
@@ -877,7 +1092,7 @@ class SpectrumProcessor:
             self.col_binned_background = stat_slice
             strong_absorbtion_indeces, strong_emission_indeces = self.detectLinesCentersInOneD(list(range(len(spec_slice))) ,spec_slice, stat_slice,
                                                                                           spec_grad_rounding = spec_grad_rounding, n_std_for_line = n_std_for_line, show = show_process,
-                                                                                            )
+                                                                                            background_bin_width = self.pix_bin_to_meas_background_noise)
             coarse_fit_grid[pix_val] = strong_emission_indeces
 
         print ('coarse_fit_grid = ' + str(coarse_fit_grid))
@@ -895,45 +1110,67 @@ class SpectrumProcessor:
             if fit_binning > 1:
                 spec_slice = np.median(spec_slice, axis = self.spec_axis)
 
+            #show_process = 0
             line_fits = self.identifyLinesOnSlice(range(len(spec_slice)), spec_slice,
                                              max_line_fit_width = line_fit_width, peak_guesses = guess_line_centers,
-                                             show_spec = (i % 20 == 0) * show_process, verbose =  (i % 20 == 0),
-                                             fit_lines_with_pedestal = fit_lines_with_pedestal, fit_line_width_with_seeing_funct = fit_line_width_with_seeing_funct)
+                                             show_spec = (i % freq_of_plot_single_row_fits == 0) * show_process, verbose = 0,
+                                             fit_lines_with_pedestal = fit_lines_with_pedestal, fit_line_width_with_seeing_funct = fit_line_width_with_seeing_funct,
+                                             background_bin_width = self.background_bin_width_for_line_id_in_slice)
 
-            print ('Found following line centers for pixel values from ' + str(pix_val) + ' to ' + str(pix_val + fit_binning) + ': ' + str((np.around([line_fit[1] for line_fit in line_fits],3) ).tolist()) )
-            #line_fits = identifyLinesOnSlice(range(len(spec_slice)), spec_slice,
-            #                                 std_thresh = n_std_for_line, max_line_fit_width = max_line_fit_width,
-            #                                 n_pix_above_thresh = n_pix_above_thresh, init_fit_width_guess = width_guess,
-            #                                 show_spec = (i % 50 == 51), verbose =  (i % 50 == 0))
-            #if show_process:
-            #    fit_funct = lambda xs, A, mu, sig, shift: A * np.exp(-(mu - np.array(xs)) ** 2.0 / (2.0 * sig ** 2.0)) + shift
-            #    for line_fit in line_fits:
-            #        plt.plot(range(len(spec_slice)), fit_funct(range(len(spec_slice)), *(line_fit[0:-2])), c = 'r')
-            #    #fit_spec = np.sum([fit_funct(range(len(spec_slice)), *(line_fit[0:-2])) for line_fit in line_fits], axis = 0)
-            #    #plt.plot(range(len(spec_slice)), fit_spec)
-            #    plt.show()
+            print ('Found following ' + str(len(line_fits)) + ' line centers for pixel values from ' + str(pix_val) + ' to ' + str(pix_val + fit_binning) + ': ' + str((np.around([line_fit[1] for line_fit in line_fits],3) ).tolist()) )
             all_slices = all_slices + [line_fits]
 
         return pix_vals, all_slices
 
-    def polyFitVar(self, ind_vals, dep_vals, fit_order, n_std_for_rejection_in_fit):
-        med = np.median(dep_vals)
-        std = np.std(dep_vals)
-        ind_vals_for_fit = [ind_vals[i] for i in range(len(dep_vals)) if abs(dep_vals[i] - med) <= n_std_for_rejection_in_fit * std]
-        ind_vals_for_fit_range = [min(ind_vals_for_fit), max(ind_vals_for_fit)]
-        dep_vals_to_fit = [dep_vals[i] for i in range(len(dep_vals)) if abs(dep_vals[i] - med) <= n_std_for_rejection_in_fit * std]
-        var_poly_fit = np.polyfit(ind_vals_for_fit, dep_vals_to_fit, fit_order)
-        #var_funct = lambda val: np.poly1d(var_poly_fit)(val) * (val >= ind_vals_for_fit_range[0]) * (val <= ind_vals_for_fit_range[1])
-        var_funct = lambda val: np.poly1d(var_poly_fit)(val)
+    def get2DLineFunction(self, strong_lines, coord_center, anchor_pixel = None):
+        """
+        Determine the function that describes the spectral emission line geometries
+           as a function of image positions (x and y in pixels).  This function
+        The fit function at pixel (x,y) is the column-(i.e. x-) value of the
+           spectral line that goes through position (x,y) if you trace the line
+           back to an 'anchor' row (by default set up to be the center of the
+           identified spectral region).
+        This fit will be used integrate the 2d spectrum into the final 1d
+           spectrum.
+        """
+        if anchor_pixel == None:
+            anchor_pixel = self.anchor_parallel_pix
+        coord_center = [0.0, anchor_pixel]
+        #col_of_line_at_row = lambda x0s, ys, params: params[0] + (x0s - coord_center[0]) * params[1] + (ys - coord_center[1]) * params[2] + (x0s - coord_center[0]) ** 2.0 * params[3] + (ys - coord_center[1]) ** 2.0 * params[4] + (x0s - coord_center[0]) * (ys - coord_center[1]) * params[5]
+        col_of_line_at_row = lambda x0s, ys, params: (x0s) * 1 + (ys - coord_center[1]) * params[0]  + (ys - coord_center[1]) ** 2.0 * params[1] + (x0s - coord_center[0]) * (ys - coord_center[1]) * params[2]
+        #line_anchor_intercepts = [[line_elem[2] for line_elem in line if line_elem[0] == anchor_pixel][0] for line in strong_lines]
+        line_anchor_intercepts = [line[np.argmin([abs(line_elem[0] - anchor_pixel) for line_elem in line])][2] for line in strong_lines]
+        x0s_to_fit = np.array(can.flattenListOfLists([[line_anchor_intercepts[i] for line_elem in strong_lines[i]] for i in range(len(strong_lines))]) )
+        ys_to_fit = np.array(can.flattenListOfLists([[line_elem[0] for line_elem in strong_lines[i]] for i in range(len(strong_lines))]) )
+        xs_to_fit = np.array(can.flattenListOfLists([[line_elem[2] for line_elem in strong_lines[i]] for i in range(len(strong_lines))]) )
 
-        return var_funct
+        funct_to_minimize = lambda params: np.sum((col_of_line_at_row(x0s_to_fit, ys_to_fit, params) - xs_to_fit) ** 2.0)
+        #Init guess is no curvature
+        #init_guess = [0.0, 1.0, 0.0, 0.0, 0.0, 0.0]
+        init_guess = [0.0, 0.0, 0.0]
+        full_2d_line_fit = optimize.minimize(funct_to_minimize, init_guess)
+        print ('full_2d_line_fit = ' + str(full_2d_line_fit))
+        full_2d_line_fit_params = full_2d_line_fit['x']
+        #full_2d_line_fit_params = init_guess #COMMENT ME OUT!!!! I JUST EXIST TO TEST THE EFFECT OF CURVATURE CORRECITON
 
+        fitted_2d_line_funct = lambda x0, y: col_of_line_at_row (x0, y, full_2d_line_fit_params)
+        for line_anchor_intercept in line_anchor_intercepts:
+            fitted_line_intercept = fitted_2d_line_funct(line_anchor_intercept, anchor_pixel)
+            print ('[line_anchor_intercept, anchor_pixel, fitted_line_intercept] = ' + str([line_anchor_intercept, anchor_pixel, fitted_line_intercept]))
+
+        return fitted_2d_line_funct
 
     def getLineFunction(self, line,
                         n_std_for_rejection_in_fit = 3,
-                        position_order = 2, A_of_x_order = 2, sig_of_x_order = 2,
-                        n_hist_bins = 21 ):
-
+                        position_order = 2, A_of_x_order = 2, sig_of_x_order = 2,):
+        """
+        Takes in a "line" consisting of a series of Gaussian fits to slices of
+           the 2d spectrum and returns polynomial fits to each of their
+           characteristics (height, width, centroids) as a function of row.
+        These polynomial fit parameters for each line are then fit together
+           (outside of this function) to determine the image-wide characteristic
+           line function.
+        """
         if self.spec_axis == 0:
             ys = [line_part[0] for line_part in line]
             xs = [line_part[2] for line_part in line]
@@ -948,18 +1185,24 @@ class SpectrumProcessor:
         As = [line_part[1] for line_part in line]
         sigs = [line_part[3] for line_part in line]
 
-        position_funct = self.polyFitVar(ind_var, dep_var, position_order, n_std_for_rejection_in_fit)
-        A_funct = self.polyFitVar(ind_var, As, position_order, n_std_for_rejection_in_fit)
-        sig_funct = self.polyFitVar(ind_var, sigs, position_order, n_std_for_rejection_in_fit)
+        position_funct = polyFitVar(ind_var, dep_var, position_order, n_std_for_rejection_in_fit)
+        A_funct = polyFitVar(ind_var, As, position_order, n_std_for_rejection_in_fit)
+        sig_funct = polyFitVar(ind_var, sigs, position_order, n_std_for_rejection_in_fit)
 
         return [ind_var, position_funct, A_funct, sig_funct]
 
     def fixContinuousLines(self, lines, line_profiles, n_bins = 21, n_empty_bins_to_drop = 2, n_hist_bins = 21, show_line_matches = 1):
+        """
+        A known problem when identifying reference lines is that nearby lines
+           get confused.  This function "fixes" that by looking for evidence of
+           a line that is jumping back and forth along two channels, possibly
+           indicating that it is in fact two lines.
+        """
         new_lines = [[] for line in lines]
         for i in range(len(lines)):
             line = lines[i]
             line_profile = line_profiles[i]
-            #First, determine if a line is getting smeared by having neighbors, and fix it if so
+            #Determine if a line is getting smeared by having neighbors, and fix it if so
             pixels = [line_slice[0] for line_slice in line]
             centers = [line_slice[2] for line_slice in line]
             fit_centers = [line_profile[1](pix) for pix in pixels]
@@ -995,6 +1238,13 @@ class SpectrumProcessor:
                            min_detections = 10, fit_line_center_index = 1,
                            search_for_extensions = None, bg_fit_width = 10,
                            draw_stats_below = 1, buffer_for_line_background_stats = 10):
+        """
+        This function takes in an image and identifies 2d lines within that image.  It
+            performs the two big steps in detecting lines: tracing them over the
+            row range and determining which of those identified lines are good
+            continuous lines.
+
+        """
         if search_binning in ['full','FULL','Full']:
             search_binning = spec_range[1] - spec_range[0]
 
@@ -1010,26 +1260,33 @@ class SpectrumProcessor:
                                         max_sep_per_pix = max_sep_per_pix, max_frac_intensity_per_pix = max_frac_intensity_per_pix,
                                         min_detections = min_detections, fit_line_center_index = fit_line_center_index,
                                         image_range_to_search = search_for_extensions, binning_search_width = search_binning,
-                                        line_bg_width = bg_fit_width, show_start_line_fits = show_process)
+                                        line_bg_width = bg_fit_width, show_start_line_fits = show_process, plot_title = 'Fitted strong lines')
 
         return lines
 
     def readInDataTextFile(self, ref_spec_file,
                            spec_file_dir = '', n_ignore = 0,
                            throughput_file = 'default_throughput.txt'):
+        """
+        Reads in data from columns into a list, useful for reading
+           in a reference spectrum.
+        """
         ref_spec = can.readInColumnsToList(ref_spec_file, file_dir = spec_file_dir, n_ignore = n_ignore, convert_to_float = 1)
         #plt.plot(*ref_spec)
         #plt.show()
 
         return ref_spec
 
-    #We want to return the integrated distance (in pixel space) between detected lines
-    # and their wavelengths that they might correspond to, given the wavelength solution.
-    # We cannot have a single wavelength match two detections (or vice versa) so we perform the
-    # matching one line at a time, and remove the match from consideration after each match is done.
     def lineMatchingFunction(self, line_pixels, line_wavelengths, n_matches, wavelength_solution, verbose = 0):
-        #We assume that line_wavelengths are sorted in the order in which they should be matched.
-        # We don't perform the matching here, to minimize computation time
+        """
+        We want to return the integrated distance (in pixel space) between detected lines
+            and their wavelengths that they might correspond to, given the wavelength solution.
+            We cannot have a single wavelength match two detections (or vice versa) so we
+            perform the matching one line at a time, and remove the match from consideration
+            after each match is done.
+        We assume that line_wavelengths are sorted in the order in which they should be matched.
+        We don't perform the matching here, to minimize computation time
+        """
         measured_waves = [wavelength_solution(pix) for pix in line_pixels]
         if len(measured_waves) < len(line_wavelengths):
             fixed_waves = measured_waves
@@ -1055,14 +1312,20 @@ class SpectrumProcessor:
 
     def matchLinesRecursive(self, line_pixels_to_be_matched, line_wavelengths_to_match, mu_of_wavelength_funct,
                            max_sep_pix = np.inf, best_matches = [], print_params = None):
-        #print ('[line_pixels_to_be_matched, line_wavelengths_to_match, best_matches] = ' + str([line_pixels_to_be_matched, line_wavelengths_to_match, best_matches] ))
+        """
+        Matches lines identified with certain centroids to a set of known reference wavelengths.
+           For this matching to work, the function requires a function to go from wavelength to
+           pixel centroids. This matching is done recursively until all centroids or all
+           wavelengths are matched up.
+        This function is also used to determine the wavelength solution for OSELOTS, in which
+           case the mu_of_wavelength_funct is varied continuously (at a level above this
+           function).
+        """
         if len(line_pixels_to_be_matched) == 0 or len(line_wavelengths_to_match) == 0:
             res = np.sum([match[-1] for match in best_matches])
             if not(print_params is None):
                 print('[params, res] = ' + str([print_params, res] ))
             return best_matches
-        #print ('[line_pixels_to_be_matched, line_wavelengths_to_match] = ' + str([line_pixels_to_be_matched, line_wavelengths_to_match]))
-        #print ('[line_pixels_to_be_matched.tolist(), line_wavelengths_to_match.tolist()] = ' + str([line_pixels_to_be_matched.tolist(), line_wavelengths_to_match.tolist()]))
         line_matches = []
         line_pixel_match_indeces = []
         line_wavelength_match_indeces = []
@@ -1073,23 +1336,21 @@ class SpectrumProcessor:
             line_pixel_to_be_matched = line_pixels_to_be_matched[i]
             line_pixels_to_match = mu_of_wavelength_funct(line_wavelengths_to_match)
             line_seps = [(line_pixel_to_match - line_pixel_to_be_matched) ** 2.0 for line_pixel_to_match in line_pixels_to_match]
-            #print ('line_seps = ' + str(line_seps))
             min_sep_index = np.argmin(line_seps)
             min_sep = line_seps[min_sep_index]
             min_seps = min_seps + [min_sep]
             min_sep_indeces = min_sep_indeces + [min_sep_index]
-        #print ('[min_seps, min_sep_indeces] = ' + str([min_seps, min_sep_indeces] ))
         #Then, keep only the closest N lines, where N is either the number of reference lines or the number of lines identified in the spectrum, whichever is smaller
         best_match_index = np.argmin(min_seps)
         best_matches = best_matches + [[line_pixels_to_be_matched[best_match_index], line_wavelengths_to_match[min_sep_indeces[best_match_index]], min_seps[best_match_index]]]
-        #return matchLines(np.array(can.removeListElement(line_pixels_to_be_matched.tolist(), best_match_index)), np.array(can.removeListElement(line_wavelengths_to_match.tolist(), min_sep_indeces[best_match_index])), mu_of_wavelength_funct, max_sep_pix = np.inf, best_matches = best_matches)
         return self.matchLinesRecursive(line_pixels_to_be_matched, np.array(can.removeListElement(line_wavelengths_to_match.tolist(), min_sep_indeces[best_match_index])), mu_of_wavelength_funct, max_sep_pix = np.inf, best_matches = best_matches, print_params = print_params)
 
 
-
+    """
     #Match, lines by line, recursively
     def matchLines(self, line_pixels_to_be_matched, line_wavelengths_to_match, mu_of_wavelength_funct,
                    max_sep_pix = np.inf):
+
         print ('[line_pixels_to_be_matched, line_wavelengths_to_match] = ' + str([line_pixels_to_be_matched, line_wavelengths_to_match]))
         #print ('[line_pixels_to_be_matched.tolist(), line_wavelengths_to_match.tolist()] = ' + str([line_pixels_to_be_matched.tolist(), line_wavelengths_to_match.tolist()]))
         line_matches = []
@@ -1117,13 +1378,20 @@ class SpectrumProcessor:
         print ('line_matches = ' + str(line_matches))
         print ('line_sep = ' + str(line_sep))
         return [line_pixel_match_indeces, line_wavelength_match_indeces, line_matches, line_sep]
+    """
 
-    def readFileIntoInterp(self, target_file, target_dir, n_ignore, convert_to_float = 1):
-        cols = can.readInColumnsToList(target_file, file_dir = target_dir, n_ignore = n_ignore, convert_to_float = convert_to_float)
+    def readFileIntoInterp(self, target_file, target_dir, n_ignore, convert_to_float = 1, delimiter = ','):
+        """
+        Reads in a file to a 1d interpreter.  Useful for reading in data like
+            throughput functions into an easy-to-use class interpreter.
+        """
+        cols = can.readInColumnsToList(target_file, file_dir = target_dir, n_ignore = n_ignore, convert_to_float = convert_to_float, delimiter = delimiter)
         interp = can.safeInterp1d(*cols)
         return interp
 
+    """
     def computeGoodnessOfFitSpectrumModel(self, fit_params, extra_args = [0, None] ):
+
         show_fit , gauss_smooth_pix = extra_args
         fitted_pixels = np.poly1d(fit_params[1:])(self.ref_spec_lines[0])
         fitted_pixel_interp = interpolate.interp1d(fitted_pixels, self.ref_spec_lines[1], bounds_error = False, fill_value = 0.0)
@@ -1159,16 +1427,28 @@ class SpectrumProcessor:
         plt.pause(0.1)
         plt.close('all')
         return diff
+    """
 
 
     #Curve fitting doesn't work very well.  Is there a way that we could just detect where lines are and determine where they are supposed to be?
     def determineWavelengthSolution(self, line_solutions, spec_range, ref_spec_file, ref_lines_file, #line_median_areas,
                                     spec_file_dir = '', throughput_file = 'default_throughput.txt',
-                                    n_ignore_spec = 0, n_ignore_lines = 0, n_ignore_throughput = 0,
+                                    n_ignore_spec = 0, n_ignore_lines = 0, n_ignore_throughput = 1,
                                     wavelength_solution_drift_order = 2,
                                     coarse_search_param_range= [[-1000.0, -100.0], [1.0, 1.5]], coarse_search_param_step = [51, 51],
                                     solution_save_dir = '', save_solution_image = 1,
                                     save_solution = 1, show_solution = 1, init_guess = [1.0, 0.0, 1.5, -500.0] ):
+        """
+        Determines the wavelength solution for the spectrograph, given fits to 2d lines in an image
+           (line_solutions) and the spectral text file with the reference spectrum (ref_spec_file).
+           The function does the wavelength matching by doing the wavelength solution for a
+           variety of wavelength solution values, assuming a linear solution (the
+           coarse_search_param_range parameter).  Once the best of those coarse wavelength
+           solutions is identified, the algorithm runs a sum-of-squares minimization around that
+           starting seed.
+        The wavelength matching (with a fixed wavelength solution) is done recursively,  using the
+            matchLinesRecursive function.
+        """
         coarse_search_param_range = self.ref_param_holder.getCoarseSearchParamRange()
         coarse_search_param_step = self.ref_param_holder.getCoarseSearchNParamStep()
         print('[coarse_search_param_range, coarse_search_param_step] = ' + str([coarse_search_param_range, coarse_search_param_step] ))
@@ -1176,22 +1456,11 @@ class SpectrumProcessor:
         self.ref_spec_lines = can.readInColumnsToList(ref_spec_file, file_dir = spec_file_dir, n_ignore = n_ignore_spec, convert_to_float = 1, delimiter = ',')
         self.ref_spec_just_lines = can.readInColumnsToList(ref_lines_file, file_dir = spec_file_dir, n_ignore = n_ignore_lines, convert_to_float = 1, delimiter = ',')
 
+        print ('[throughput_file, spec_file_dir, n_ignore_throughput] = ' + str([throughput_file, spec_file_dir, n_ignore_throughput]))
         throughput_interp = self.readFileIntoInterp(throughput_file, spec_file_dir, n_ignore_throughput, convert_to_float = 1)
         self.ref_spec_lines[1] = [self.ref_spec_lines[1][0] / (((self.ref_spec_lines[0][1] + self.ref_spec_lines[0][0]) / 2.0 - self.ref_spec_lines[0][0]) * 2.0)] + [self.ref_spec_lines[1][i] / (-(self.ref_spec_lines[0][i] + self.ref_spec_lines[0][i-1]) / 2.0 + (self.ref_spec_lines[0][i+1] + self.ref_spec_lines[0][i]) / 2.0) for i in range(1, len(self.ref_spec_lines[0])-1)] + [self.ref_spec_lines[1][-1] / (((self.ref_spec_lines[0][-1] + self.ref_spec_lines[0][-2]) / 2.0 - self.ref_spec_lines[0][-2]) * 2.0)]
         self.ref_spec_lines[1] = (np.array(self.ref_spec_lines[1]) * throughput_interp(self.ref_spec_lines[0])).tolist()
 
-        #f, axarr = plt.subplots(2,1)
-        #axarr[0].plot(self.ref_spec_lines[0], self.ref_spec_lines[1])
-        #axarr[0].set_xlabel('wavelength (nm)')
-        #axarr[1].plot(self.parallel_spec_pixels, self.full_pix_spectrum)
-        #axarr[1].set_xlabel('pix num')
-
-        #init_guess = [1.0, self.approx_pix_scale, -500.0]
-        #rough_wavelength_fit = optimize.minimize(self.computeGoodnessOfFitSpectrumModel, init_guess, args = [0, self.crude_fit_gauss] )
-        #print ('rough_wavelength_fit = ' + str(rough_wavelength_fit))
-        #init_guess = [rough_wavelength_fit['x'].tolist()[0]] + [0.0] + rough_wavelength_fit['x'].tolist()[1:]
-        #wavelength_fit = optimize.minimize(self.computeGoodnessOfFitSpectrumModel, init_guess, args = [0, None] )
-        #print ('wavelength_fit = ' + str(wavelength_fit))
         slice_pixels = range(*spec_range)
         fitted_spectra = [[0.0 for pix in slice_pixels] for guess in range(self.wavelength_solution_order + 1)]
         best_match_params1 = [0.0, 0.0]
@@ -1207,30 +1476,6 @@ class SpectrumProcessor:
         #median_line_centers = [np.median([line_solution[1](pix) for pix in slice_pixels]) for line_solution in line_solutions]
         median_line_centers = [line_solution[1] for line_solution in line_solutions]
         print ('median_line_centers = ' + str(median_line_centers))
-
-        #there is one light that I expect to be the brightest.  We use that to anchor the fit.
-        #peak_area_index = np.argmax(line_median_areas)
-        #peak_line_center = median_line_centers[peak_area_index]
-        #peak_wavelength = 882.97
-        #print ('peak_line_center = ' + str(peak_line_center))
-        #print ('peak_wavelength = ' + str(peak_wavelength))
-        #print('len(line_solutions) = ' + str(len(line_solutions)))
-        #print('len(line_median_areas) = ' + str(len(line_median_areas)))
-        #mu_of_wavelength = lambda lam, mu0, mu1: mu1 * (lam - peak_wavelength) + peak_line_center
-        #for test_mu1 in np.linspace(*(coarse_search_param_range[1]), coarse_search_param_step[1]):
-        #    matched_line_pixel_indeces, matched_line_wavelength_indeces, matched_lines, matched_lines_sep = matchLines(np.array(median_line_centers), np.array(ref_spec_lines[0]), lambda waves: mu_of_wavelength(waves, 0.0, test_mu1) )
-        #    if (len(matched_lines) > len(best_matches)) or (len(matched_lines) == len(best_matches) and matched_lines_sep < best_match_sep):
-        #        best_match_params1 = [0.0, test_mu1]
-        #        best_matches = matched_lines
-        #        best_match_sep = matched_lines_sep
-        #        best_match_pixel_indeces = matched_line_pixel_indeces
-        #        best_match_wavelength_indeces = matched_line_wavelength_indeces
-        #print ('best_match_params1 = ' + str(best_match_params1))
-        #plt.scatter(np.array(ref_spec_lines[0]), [mu_of_wavelength(line, *best_match_params1) for line in ref_spec_lines[0]])
-        #plt.show()
-        #axarr[1].scatter(ref_spec_lines[0], [0 for line in ref_spec_lines[0]], c = 'b')
-        #axarr[1].scatter([ref_spec_lines[0][index] for index in best_match_wavelength_indeces], [0 for index in best_match_wavelength_indeces], c = 'c')
-        #[ axarr[1].annotate(i, (ref_spec_lines[0][best_match_wavelength_indeces[i]],0) ) for i in range(len(best_match_wavelength_indeces)) ]
 
         wavelength_of_mu = lambda mu, lam0, lam1, lam2: lam0 / self.wavelength_scaling[0] + lam1 / self.wavelength_scaling[1] * mu + lam2 / self.wavelength_scaling[2] * mu ** 2.0
         mu_of_wavelength = lambda lam, mu0, mu1, mu2: mu0 / self.wavelength_scaling[0] + mu1 / self.wavelength_scaling[1] * lam + mu2 / self.wavelength_scaling[2] * lam ** 2.0
@@ -1249,17 +1494,6 @@ class SpectrumProcessor:
                     best_match_res = match_res
                     best_matches = matched_lines
                     best_match_params = [test_mu0, test_mu1]
-                #if (len(matched_lines) > len(best_matches)) or (len(matched_lines) == len(best_matches) and matched_lines_sep < best_match_sep):
-                #    best_match_params = [test_mu0, test_mu1]
-                #    best_matches = matched_lines
-                #    best_match_sep = matched_lines_sep
-                #    best_match_pixel_indeces = matched_line_pixel_indeces
-                #    best_match_wavelength_indeces = matched_line_wavelength_indeces
-
-        #print ('[best_match_pixel_indeces, best_match_wavelength_indeces, best_match_params, best_matches, best_match_sep] = ' + str([best_match_pixel_indeces, best_match_wavelength_indeces, best_match_params, best_matches, best_match_sep]))
-        #print('[median_line_centers, self.ref_spec_just_lines[0]] = ' + str([median_line_centers, self.ref_spec_just_lines[0]]))
-        #best_match_params = [best_match_params[0] + 1.0, best_match_params[1] + 1.0]
-        #best_match_params = [-569.3521584 ,    1.21126767]
         print ('[np.array(median_line_centers), np.array(self.ref_spec_just_lines[0]), best_match_params] = ' + str([np.array(median_line_centers), np.array(self.ref_spec_just_lines[0]), best_match_params]))
         best_match_linear = optimize.minimize(lambda test_params: np.sum([match[-1] for match in self.matchLinesRecursive(np.array(median_line_centers), np.array(self.ref_spec_just_lines[0]), lambda pixels: mu_of_wavelength(pixels, *(test_params.tolist() + [0.0])), print_params = None )]), best_match_params  , method = 'Nelder-Mead')
 
@@ -1347,6 +1581,7 @@ class SpectrumProcessor:
 
         return [mu_of_wavelength_solution, wavelength_of_mu_solution]
 
+    """
     def create2DWavelengthSolutionCallableFunctions(self, wavelength_polyfit):
 
         #fitted_wavelength_solution = [np.poly1d(fit_to_solution_term) for fit_to_solution_term in wavelength_polyfit]
@@ -1354,7 +1589,7 @@ class SpectrumProcessor:
         wavelength_of_mu_solution = lambda mu, y: ((np.poly1d([solution_term(y) for solution_term in fitted_wavelength_solution]) - mu).roots)[0]
 
         return [mu_of_wavelength_solution, wavelength_of_mu_solution]
-
+"""
     #def loadWavelengthSolution(solution_file, load_dir = ''):
     #    fitted_wavelength_solution = np.load(archival_data_dir + solution_file)
     #    mu_of_wavelength_solution = lambda lam, y: np.poly1d([solution_term(y) for solution_term in fitted_wavelength_solution])(lam)
@@ -1363,6 +1598,15 @@ class SpectrumProcessor:
     #    return [mu_of_wavelength_solution, wavelength_of_mu_solution]
 
     def createWavelengthSolutionCallableFunctions(self, wavelength_poly_terms):
+        """
+        Given a set of polynomial terms describing the wavelength solution (pixel
+           to wavelength), this function returns TWO callable functions: the pixel
+           to wavelength solution computed directly from these parameters AND a
+           wavelength to pixel solution, determined by inverting this polynomial.
+        The wavelength solution for a night is saved as a plain text file, and
+           can be reloaded.  This function takes those numbers (read by another
+           function) and returns a callable polynomial.
+        """
         print ('wavelength_poly_terms = ' + str(wavelength_poly_terms))
         mu_of_wavelength_solution = lambda lam: np.poly1d(wavelength_poly_terms)(lam)
         if self.wavelength_solution_order > 1:
@@ -1371,6 +1615,15 @@ class SpectrumProcessor:
             wavelength_of_mu_solution = lambda mu: ((np.poly1d(wavelength_poly_terms) - mu).roots)
         return [mu_of_wavelength_solution, wavelength_of_mu_solution]
 
+    """
+    #New curvature dict takes an x0 at the anchor pixel returns an x(y) function to parameterize the curve that intersecs x0 at the anchor pixel
+    def determineMacroLineCurvatureDictNew(self, spec_range, strong_line_profiles, pix_index = 0, mu_index = 1, line_fit_order = 2, curvature_fit_order = 2, anchor_parallel_pix = None):
+        if anchor_parallel_pix == None:
+            anchor_parallel_pix = self.anchor_parallel_pix
+        print ('anchor_parallel_pix = ' + str(anchor_parallel_pix))
+        poly_fits = [ np.polyfit([], []) for i in range(line_fit_order) ]
+
+    #Old curvature dict takes an x and a y and gives back the corresponding x0 where the contour that passes through x,y intersects the anchor pixel
     def determineMacroLineCurvatureDict(self, spec_range, strong_line_profiles, pix_index = 0, mu_index = 1, curvature_fit_order = 2, anchor_parallel_pix = None):
         if anchor_parallel_pix == None:
             anchor_parallel_pix = self.anchor_parallel_pix
@@ -1382,16 +1635,82 @@ class SpectrumProcessor:
             undo_curve_fit = np.polyfit(line_perp_pixels, anchor_line_perp_pixels, curvature_fit_order)
             undo_curve_funct = np.poly1d(undo_curve_fit)
             line_anchor_funct_dict[spec_parallel_pix] = undo_curve_funct
-
         return line_anchor_funct_dict
+    """
+
+    def measureFullPixelSpectrum(self, current_image, spec_range, full_2d_line_profile_fit,
+                                     anchor_cols_to_integrate_from = None, min_pix = 0, max_pix = 1023):
+        """
+        This function does the actual integration of a 2d spectrum into a 1d spectrum, including
+            an integration along the line curvature (given by the full_2d_line_profile_fit).  The
+            trace along curvature integrates a column that is one-pixel wide along columns.  The
+            contribution of a pixel to a section of the spectrum is determined in proportion to
+            the portion of the pixel in that column.  For example, if the line curvature passes
+            has value 100.4 at row 400, pixels 99 and 100 of row 400 respectively contribute 10%
+            and 90% to the value added to the overall integration.  This ensures that the total
+            flux of the spectrum is the same as binning along columns directly.
+        """
+        spec_pixels = np.array(list(range(*spec_range)))
+        if anchor_cols_to_integrate_from == None:
+            if self.spec_axis == 0:
+                anchor_cols_to_integrate_from  = range(len(current_image[0, :]))
+            else:
+                anchor_cols_to_integrate_from = range(len(current_image[:, 0]))
+        #anchor_cols_to_integrate_from = range(400, 450)
+        intensities = [ 0.0 for i in range(len(anchor_cols_to_integrate_from)) ]
+        n_cols = len(anchor_cols_to_integrate_from)
+        for i in range(n_cols):
+            sys.stdout.write("\r{0}".format('Computing intensity for wavelength that intersects pixel (x, y) = ' + str((i, self.anchor_parallel_pix)) + '.  (We are ' + str(int (i / n_cols * 100)) + '% done)...' ))
+            sys.stdout.flush()
+            intensities_of_trace = [0.0 for row in spec_pixels]
+            anchor_col = anchor_cols_to_integrate_from[i]
+            anchor_left_col, anchor_right_col = [anchor_col - 0.5, anchor_col + 0.5]
+            cols_of_left_trace = [full_2d_line_profile_fit(anchor_left_col, row) for row in spec_pixels]
+            cols_of_right_trace = [full_2d_line_profile_fit(anchor_right_col, row) for row in spec_pixels]
+            #Now we need to add up the intensity betwen the trace of the left pixel edge and right pixel
+            #  edge, adding counts from pixels in proportion to how much of the pixel lies between the trace
+
+            for j in range(len(spec_pixels)):
+                spec_pix = spec_pixels[j]
+                left_col = cols_of_left_trace[j]
+                right_col = cols_of_right_trace[j]
+                current_col = left_col
+                included_col_proportions = {}
+                while current_col < right_col:
+                    next_col_edge = np.floor(current_col + 1.5) - 0.5
+                    if next_col_edge >= right_col:
+                        next_col_edge = right_col
+                    col_prop = next_col_edge - current_col
+                    included_col_proportions[int(current_col + 0.5)] = col_prop
+                    current_col = next_col_edge
+                if self.spec_axis == 0:
+                    included_intensities = [current_image[spec_pix, col] * included_col_proportions[col] if (col > min_pix and col < max_pix) else 0.0 for col in included_col_proportions.keys()  ]
+                else:
+                    included_intensities = [current_image[col, spec_pix] * included_col_proportions[col] if (col > min_pix and col < max_pix) else 0.0 for col in included_col_proportions.keys() ]
+                #print ('included_intensities = ' + str(included_intensities))
+                intensities_of_trace[j] = np.sum(included_intensities)
+            #print ('intensities_of_trace = ' + str(intensities_of_trace ))
+            intensities[i] = np.sum(intensities_of_trace)
+        print ('')
+        #if self.show_fits:
+
+        intensity_interp = interpolate.interp1d(anchor_cols_to_integrate_from, intensities)
+        if self.show_fits:
+            plt.close('all')
+            plt.plot(anchor_cols_to_integrate_from, intensities , c = 'cyan')
+            plt.xlabel('Anchor column of trace (pix)')
+            plt.ylabel('Integrated intensity (ADU)')
+            plt.show()
+        return [anchor_cols_to_integrate_from, intensity_interp ]
 
 
+    """
     #line_profile_dict takes in a pixel y and then a pixel x to determine the pixel x position where a line at that xy would trace to at y = 0 (center of the spectrum)
-    def measureFullPixelSpectrum(self, current_image, spec_range, undo_line_curvature_dict,
+    def measureFullPixelSpectrumOld(self, current_image, spec_range, undo_line_curvature_dict,
                                  mu_index = 1, width_index = 3, width_fit_order = 2 ):
         spec_pixels = list(range(*spec_range))
-        intensities = [[[], []] for i in range(len(spec_pixels))]
-        spec_slice_pixels = list(range(np.shape(current_image)[(self.spec_axis + 1) % 2]))
+        intensities = [ [[], []] for i in range(len(spec_pixels)) ]
+        spec_slice_pixels = np.array(list(range(np.shape(current_image)[(self.spec_axis + 1) % 2])))
 
         for i in range(len(spec_pixels)):
             pix = spec_pixels[i]
@@ -1406,7 +1725,7 @@ class SpectrumProcessor:
             #intensities[i] = [[wavelength_of_mu_solution(spec_slice_pixels[j], pix) for j in range(len(spec_slice_pixels))],
             #                  [spec_slice[j] / throughput_interp(wavelength_of_mu_solution(spec_slice_pixels[j], pix)) if throughput_interp(wavelength_of_mu_solution(spec_slice_pixels[j], pix)) > 0.0 else 0.0 for j in range(len(spec_slice_pixels))] ]
             #Determine the pixel that a line passing through this pixel on this row should trace to, according to the line curvature solutions that we have already found
-            intensities[i] = [[undo_line_curvature_dict[pix](spec_slice_pixel) for spec_slice_pixel in spec_slice_pixels ], [spec_slice_val for spec_slice_val in spec_slice]]
+            intensities[i] = [[undo_line_curvature_dict[pix](spec_slice_pixel) for spec_slice_pixel in spec_slice_pixels ], spec_slice[:]]
 
         print ('Intensities computed.')
         #print ('intensities[0] = ' + str(intensities[0]))
@@ -1418,55 +1737,15 @@ class SpectrumProcessor:
         #full_spec_interp = can.safeInterp1d( spec_slice_pixels, np.sum(current_image[spec_range[0]:spec_range[1], :], axis = 0))
 
         return spec_slice_pixels, full_spec_interp
-
-
-
-    def deconvolveSpectrum(self, current_image, spec_range, mu_of_wavelength_solution, strong_line_profiles, throughput_file, throughput_dir, n_ignore_throughput,
-                           mu_index = 1, width_index = 3, width_fit_order = 2, wavelength_range = [300.0, 1100.0], wavelength_step = 0.5 ):
-        throughput_interp = readFileIntoInterp(throughput_file, throughput_dir, n_ignore_throughput, convert_to_float = 1) # Throughput(wavelength)
-        spec_pixels = list(range(*spec_range))
-        intensities = [[[], []] for i in range(len(spec_pixels))]
-        #for i in range(len(spec_pixels)):
-        for i in range(len(spec_pixels)):
-            pix = spec_pixels[i]
-            #print ('Computing intensity for pix = ' + str(pix))
-            sys.stdout.write("\r{0}".format('Computing intensity for pixel ' + str(pix) + ' (' + str(int (i / len(spec_pixels) * 100)) + '% done)...' ))
-            sys.stdout.flush()
-            if self.spec_axis == 0:
-                spec_slice = current_image[pix, :]
-            else:
-                spec_slice = current_image[:, pix]
-            width_funct = np.poly1d(np.polyfit([strong_line[mu_index](pix) for strong_line in strong_line_profiles], [strong_line[width_index](pix) for strong_line in strong_line_profiles], width_fit_order))
-            #plt.scatter([strong_line[mu_index](pix) for strong_line in strong_line_profiles], [strong_line[width_index](pix) for strong_line in strong_line_profiles])
-            #plt.plot(np.arange(min([strong_line[mu_index](pix) for strong_line in strong_line_profiles]), max([strong_line[mu_index](pix) for strong_line in strong_line_profiles])),
-            #         width_funct(np.arange(min([strong_line[mu_index](pix) for strong_line in strong_line_profiles]), max([strong_line[mu_index](pix) for strong_line in strong_line_profiles]))))
-            #plt.show()
-            spec_slice_pixels = list(range(len(spec_slice)))
-            widths = width_funct(spec_slice_pixels)
-
-            unity_interp = lambda wave: 1.0
-            throughput_interp = unity_interp
-            intensities[i] = [[wavelength_of_mu_solution(spec_slice_pixels[j], pix) for j in range(len(spec_slice_pixels))],
-                              [spec_slice[j] / throughput_interp(wavelength_of_mu_solution(spec_slice_pixels[j], pix)) if throughput_interp(wavelength_of_mu_solution(spec_slice_pixels[j], pix)) > 0.0 else 0.0 for j in range(len(spec_slice_pixels))] ]
-            #f, axarr = plt.subplots(2,1)
-            #axarr[0].plot(spec_slice_pixels, spec_slice)
-            #axarr[1].plot(spec_slice_pixels, np.exp((-np.array(spec_slice_pixels) ** 2.0 ) / (2.0 * widths ** 2.0)))
-            #axarr[1].plot(spec_slice_pixels, intensities[i][1])
-            #plt.show()
-            #plt.plot(spec_slice_pixels, [throughput_interp(wavelength_of_mu_solution(spec_slice_pixels[j], pix)) for j in spec_slice_pixels])
-            #plt.plot(spec_slice_pixels, [np.sqrt(2.0 * np.pi * widths[j] ** 2.0) for j in spec_slice_pixels])
-            #plt.show()
-        print ('Intensities computed.')
-        intensity_interps = [can.safeInterp1d(intensity[0], intensity[1]) for intensity in intensities]
-        full_spec_interp = can.safeInterp1d( [lam for lam in np.arange(*wavelength_range, wavelength_step)], [np.sum([interp(lam) for interp in intensity_interps]) for lam in np.arange(*wavelength_range, wavelength_step)] )
-        doconvolved_lines = 1
-        f, axarr = plt.subplots(2,1, figsize = self.default_figsize)
-        axarr[0].plot(np.arange(*wavelength_range, wavelength_step), intensity_interps[len(spec_pixels) // 2](np.arange(*wavelength_range, wavelength_step)))
-        axarr[1].plot(np.arange(*wavelength_range, wavelength_step), full_spec_interp(np.arange(*wavelength_range, wavelength_step)))
-        plt.show()
-        return 1
+    """
 
     def stackImage(self, current_images, current_headers, combine = 'median'):
+        """
+        Combine a stack of image arrays (read into RAM) into a single image file.
+           The user can specify the type of averaging (mean or median).  Note
+           this median combination assumes all data are read into ram (in contrast
+           to the SmartMedian function in the cantrips.py library).
+        """
         current_header = current_headers[0]
         if combine == 'median':
             current_image = np.median(current_images, axis = self.spec_axis)
@@ -1479,13 +1758,23 @@ class SpectrumProcessor:
         return current_image, current_header
 
     def correctBackground(self, image, spec_range, background_buffer, background_size, background_low = 1, ):
+        """
+        Attempts to correct the background of the spectrum by inteprolating the
+           image directly above and/or below the spectral region.  This
+           background interpolation works okay, but not perfectly.  This is
+           done using the fitMaskeImage interpolation method from the
+           cantrips.py library.
+        We have found that this method works imperfectly, as the background
+           structure is typically non-uniform.  Therefore, we no longer do this
+           by default, opting for a direct-light level correction.
+        """
         background_cut_pixels = [int(self.mu_of_wavelength_solution(self.background_cut_wavelengths[0])), int(self.mu_of_wavelength_solution(self.background_cut_wavelengths[1]))]
 
         image_shape = np.shape(image)
         print ('[spec_range, background_cut_pixels, self.bg_fit_range] = ' + str([spec_range, background_cut_pixels, self.bg_fit_range] ))
         #masked_image[spec_range[0]:spec_range[1], background_cut_pixels[0]:background_cut_pixels[1] ] = 0.0
-        clip_section = [[max(spec_range[0] - self.bg_fit_range[0][0], 0), min(spec_range[1] + self.bg_fit_range[0][0], image_shape[0])],
-                               [max(background_cut_pixels[0] - self.bg_fit_range[1][0], 0), min(background_cut_pixels[1] + self.bg_fit_range[1][1], image_shape[1])]]
+        clip_section = [[int(max(spec_range[0] - self.bg_fit_range[0][0], 0)), int(min(spec_range[1] + self.bg_fit_range[0][0], image_shape[0]))],
+                               [int(max(background_cut_pixels[0] - self.bg_fit_range[1][0], 0)), int(min(background_cut_pixels[1] + self.bg_fit_range[1][1], image_shape[1]))]]
         print ('clip_section = ' + str(clip_section))
         clipped_image = image[clip_section[0][0]:clip_section[0][1], clip_section[1][0]:clip_section[1][1]]
         masked_image = clipped_image.copy()
@@ -1496,9 +1785,9 @@ class SpectrumProcessor:
         spec_box_section = [[background_cut_pixels[0] - clip_section[1][0] - clipped_image_shape[1] // 2, background_cut_pixels[1] - clip_section[1][0] - clipped_image_shape[1] // 2],
                             [spec_range[0] - clip_section[0][0] - clipped_image_shape[0] // 2, spec_range[1] - clip_section[0][0] - clipped_image_shape[0] // 2] ]
 
-        masked_image[spec_range[0] - clip_section[0][0]:spec_range[1] - clip_section[0][0],
-                     background_cut_pixels[0] - clip_section[1][0]:background_cut_pixels[1] - clip_section[1][0] ] = 0.0
-        print ('[fit_x_lims, fit_y_lims, spec_box_section] = ' + str([fit_x_lims, fit_y_lims, spec_box_section]))
+        mask_section = [[background_cut_pixels[0] - clip_section[1][0],background_cut_pixels[1] - clip_section[1][0]], [spec_range[0] - clip_section[0][0],spec_range[1] - clip_section[0][0]] ]
+        #mask_section = clip_section
+        masked_image[mask_section[1][0]:mask_section[1][1], mask_section[0][0]:mask_section[0][1]] = 0.0
         can.saveDataToFitsFile(np.transpose(masked_image), 'ImageWithSpecMask.fits', self.target_dir, header = 'default', n_mosaic_extensions = 0)
         can.saveDataToFitsFile(np.transpose(image), 'ImageWithBackgound.fits', self.target_dir, header = 'default', n_mosaic_extensions = 0)
         background_fit, background_fit_funct, clipped_background = can.fitMaskedImage(clipped_image, mask_region = spec_box_section, fit_funct = 'poly3', verbose = 0, param_scalings = [1.0, 1.0, 1.0, 100.0, 100.0, 100.0, 1000.0, 1000.0, 1000.0, 1000.0], x_lims = fit_x_lims, y_lims = fit_y_lims, )
@@ -1506,42 +1795,22 @@ class SpectrumProcessor:
         fit_x_mesh = x_mesh - clip_section[1][0] - clipped_image_shape[1] // 2
         fit_y_mesh = y_mesh - clip_section[0][0] - clipped_image_shape[0] // 2
         background = background_fit_funct(fit_x_mesh, fit_y_mesh)
-
         can.saveDataToFitsFile(np.transpose(background), 'BackgroundFit.fits', self.target_dir, header = 'default', n_mosaic_extensions = 0)
-        can.saveDataToFitsFile(np.transpose(clipped_image - clipped_background), 'ClippedImageWithoutBackground.fits', self.target_dir, header = 'default', n_mosaic_extensions = 0)
-        can.saveDataToFitsFile(np.transpose(clipped_background), 'ClippedBackgroundFit.fits', self.target_dir, header = 'default', n_mosaic_extensions = 0)
-
-
-
-        print ('background_fit = ' + str(background_fit))
-        """
-        image_shape = np.shape(image)
-        x_mesh, y_mesh = np.meshgrid(np.linspace(0, image_shape[0]), np.linspace(0, image_shape[1]))
-        if background_low:
-            background_range = [max(0, spec_range[0] - (background_buffer + background_size)),
-                                min(np.shape(image)[(self.spec_axis + 1)%2], spec_range[0] - background_buffer )]
-        else:
-            background_range = [max(0, spec_range[1] + background_buffer ),
-                                min(np.shape(image)[(self.spec_axis + 1)%2], spec_range[1] + background_size + background_buffer )]
-        if self.spec_axis == 0:
-            background = image[background_range[0]:background_range[1], :]
-        else:
-            background = image[:, background_range[0]:background_range[1]]
-        if background_size > 1:
-            background = np.median(background, axis = self.spec_axis)
-
-        for pix in range(*spec_range):
-            if self.spec_axis == 0:
-                image[pix, :] = image[pix, :] - background
-            else:
-                image[:, pix] = image[:, pix] - background
-        """
         image = image - background
         can.saveDataToFitsFile(np.transpose(image), 'BackgroundSubtractedImage.fits', self.target_dir, header = 'default', n_mosaic_extensions = 0)
         return image
 
 
-    def processImages(self, spec_files_to_reduce = None, do_bias = None, do_dark = None, crc_correct = None, cosmic_prefix = None, save_stacked_image = None, save_image_name = None ):
+    def processImages(self, spec_files_to_reduce = None, do_bias = None, do_dark = None, crc_correct = None, cosmic_prefix = None, save_stacked_image = None, save_image_name = None, apply_background_correction = 0, redetermine_spec_range = 1, scatter_correction_file = None, apply_scatter_correction = 1 ):
+        """
+        This processes the images specified in the spec_files_to_reduce text
+            file.  This reduction includes a series of steps, including bias,
+            dark (i.e. single mode) illumination patterns, cosmic ray
+            correction, background correction (ideally not needed), and
+            scatter correction.
+        This is a relatively standard image reduction process, except for
+            the scatter correction file.
+        """
         if do_bias is None:
             do_bias = self.do_bias
         if do_dark is None:
@@ -1554,7 +1823,6 @@ class SpectrumProcessor:
             spec_files_to_reduce = self.spec_files
         if save_stacked_image == None:
             save_stacked_image = self.save_stacked_image
-
 
         self.current_images = [[] for spec_file in spec_files_to_reduce]
         self.current_headers = [[] for spec_file in spec_files_to_reduce]
@@ -1569,34 +1837,54 @@ class SpectrumProcessor:
 
         #[OPTIONAL] Make master bias
         if do_bias or do_dark:
-            master_bias_exists = os.path.isfile(self.target_dir + self.master_bias_file)
+            master_bias_exists = os.path.isfile(self.target_dir + self.master_bias_image_file)
             if not(master_bias_exists):
-                print ('Making master bias file.  Will be saved to ' + self.target_dir + self.master_bias_file)
-                master_bias_exists = self.makeMasterBias(self.master_bias_file, self.target_dir)
+                print ('Making master bias files.  Will be saved to: ' )
+                print(self.target_dir + self.master_bias_image_file)
+                print(self.target_dir + self.master_bias_level_file)
+                master_bias_exists = self.makeMasterBias(self.master_bias_image_file, self.master_bias_level_file, self.target_dir)
             if not(master_bias_exists):
                 print ('Unable to find master bias file, ' + self.target_dir + self.master_bias_file + ', and also could not make it.  Returning without processing.')
                 #sys.exit()
 
         #[OPTIONAL] Make master dark
         if do_dark :
-            master_dark_exists = os.path.isfile(target_dir + master_dark_file)
+            master_dark_exists = os.path.isfile(self.target_dir + self.master_dark_file)
             if not(master_dark_exists):
                 print ('Making master dark file.  Will be saved to ' + self.target_dir + self.master_dark_file)
-                master_dark_exists = self.makeMasterDark(self.master_dark_file, self.target_dir, self.master_bias_file)
+                master_dark_exists = self.makeMasterDark(self.master_dark_file, self.target_dir, self.master_bias_image_file, self.master_bias_level_file)
             if not(master_dark_exists):
                 print ('Unable to find master dark file, ' + self.target_dir + self.master_dark_file + ', and also could not make it.  Returning without processing.')
                 #sys.exit()
 
-        #Bias Subtract
+        #Bias and dark subtract
         for i in range(len(spec_files_to_reduce)):
             if do_bias or do_dark:
-                self.current_images[i], self.current_headers[i] = self.biasSubtract(self.current_images[i], self.current_headers[i], self.master_bias_file)
+                self.current_images[i], self.current_headers[i] = self.biasSubtract(self.current_images[i], self.current_headers[i], self.master_bias_image_file, self.master_bias_level_file)
             if do_dark:
                 self.current_images[i], self.current_headers[i] = self.darkSubtract(self.current_images[i], self.current_headers[i], self.master_dark_file)
 
+        exp_times = [float(header[self.fits_exp_time_keyword]) for header in self.current_headers]
+        self.current_images = [ self.current_images[i] / exp_times[i] for i in range(len(self.current_images)) ]
         self.current_image, self.current_header = self.stackImage(self.current_images, self.current_headers, combine = 'mean' )
+        if self.spec_range == None or redetermine_spec_range:
+            self.spec_range = self.determineSpecRowRanges(self.current_image, showIDedLines = self.show_fits, save_perp_spec_image = self.save_perp_spec_image, perp_spec_image_name = self.target_dir + self.perp_spec_image_name)
+        else:
+            print ('Using reference spectral range... ')
+        if apply_background_correction:
+            self.current_image = self.correctBackground(self.current_image, self.spec_range, self.background_buffer, self.background_size, background_low = self.background_low, )
         #self.current_image = np.median(self.current_images, axis = 0)
+        if not(scatter_correction_file is None) and apply_scatter_correction:
+            scatter_correction = np.transpose(can.readInDataFromFitsFile(scatter_correction_file, self.scatter_data_dir)[0])
+            if save_stacked_image and save_image_name != None:
+                can.saveDataToFitsFile(np.transpose(self.current_image), save_image_name.split('.')[0] + '_NoScatterCorrection.fits' , self.target_dir, header = self.current_header)
+                can.saveDataToFitsFile(np.transpose(scatter_correction), 'ScatterCorrection.fits' , self.target_dir, header = self.current_header)
+            self.current_image = self.current_image - scatter_correction
+        elif apply_scatter_correction:
+            print ('Could not find file: ' + str(scatter_correction_file) + ' to do scatter correction.  So no scatter correction applied.')
+
         self.current_header = self.current_headers[0]
+        self.current_header[self.fits_exp_time_keyword] = 1
         if save_stacked_image and save_image_name != None:
             can.saveDataToFitsFile(np.transpose(self.current_image), save_image_name , self.target_dir, header = self.current_header)
 
@@ -1604,9 +1892,16 @@ class SpectrumProcessor:
         print ('self.target_dir = ' + str(self.target_dir))
         if self.remove_intermed_images and crc_correct:
             [os.remove(self.target_dir + file) for file in spec_files_to_reduce]
+
         return self.current_image, self.current_header
 
     def loadWavelengthSolution(self, solution_file = None, load_dir = ''):
+        """
+        This function reads in the plaintext file that includes the determined wavelength
+            solution for OSELOTS.  It feeds those read in numbers to the
+            createWavelengthSolutionCallableFunctions function to acquire a callable
+            set of functions to go between wavelength and line centroids.
+        """
         if solution_file == None:
             solution_file = self.ref_spec_solution_file
         #wavelength_poly_terms = np.load(archival_data_dir + solution_file)
@@ -1618,138 +1913,313 @@ class SpectrumProcessor:
         return self.mu_of_wavelength_solution, self.wavelength_of_mu_solution
 
 
-    def reduceImagesTo1dSpectrum(self, images_to_reduce, n_std_for_strong_line, save_intermediate_images = 0, define_new_anchor_pix = 0, assign_new_master_val = 0, save_image_name = None, redetermine_spec_range = 1, crc_correct = None, reference_image = 0, bin_along_curve = 1, normalize = 1):
+    def showCurvatureFits(self, raw_lines, fitted_line_profiles, full_2d_line_fit,
+                          n_lines_per_row = 8, plot_elem_size = [1.5, 3], line_colors = ['k','r','g'], line_styles = ['-','--','--'], line_alphas = [1.0, 0.5, 0.5],
+                          xlabel = 'Column (pix)', ylabel = 'Row (pix)'):
+        """
+        This function plots the fitted line profiles in a 2d image.  The line colors
+           are displayed in (arbitrary) increasing order.  This function is a Useful
+           diagnostic to see if the plots are being correctly traced out.
+        """
+        n_lines = len(raw_lines)
+        n_cols = min(n_lines, n_lines_per_row)
+        n_rows = int(np.ceil(n_lines / n_lines_per_row))
+        plot_h_size = n_cols * plot_elem_size[0]
+        plot_v_size = n_rows * plot_elem_size[1]
+        print ('[n_lines, n_cols, n_rows] = ' + str([n_lines, n_cols, n_rows] ))
+        plt.close('all')
+        spec_range_pix = list(range(self.spec_range[0], self.spec_range[1]))
+        n_subplots = n_rows * n_cols
+        f, axarr = plt.subplots(n_rows, n_cols, figsize = (plot_h_size, plot_v_size), squeeze = False, sharey = 'all')
+        for i in range(n_lines):
+            print ('Working on line ' + str(i) + ' of line ' + str(n_lines))
+            raw_line = raw_lines[i]
+            line_profile = fitted_line_profiles[i]
+            anchor_parallel_pixel = self.anchor_parallel_pix
+            anchor_col = line_profile[1](anchor_parallel_pixel)
+            #fitted_line_column = int(np.round(line_profile[1](anchor_parallel_pixel)) )
+            #full_curvature_profile = [undo_line_curvature_dict(row_pix)() for row_pix in spec_range_pix]
+            col_num = i % n_lines_per_row
+            row_num = i // n_lines_per_row
+            ax = axarr[row_num, col_num]
+            ax.plot([line_elem[2] for line_elem in raw_line], [line_elem[0] for line_elem in raw_line], color = line_colors[0], linestyle = line_styles[0], alpha = line_alphas[0])
+            ax.plot([line_profile[1](x) for x in line_profile[0]], line_profile[0], color = line_colors[1], linestyle = line_styles[1], alpha = line_alphas[1])
+            ax.plot([full_2d_line_fit(anchor_col, pix) for pix in spec_range_pix], spec_range_pix, color = line_colors[2], linestyle = line_styles[2], alpha = line_alphas[2])
+            if row_num == 0:
+                ax.set_xlabel(xlabel)
+            if col_num == 0:
+                ax.set_ylabel(ylabel)
+            ax.xaxis.tick_top()
+            ax.xaxis.set_label_position('top')
+        for i in range(n_lines, n_subplots):
+            col_num = i % n_lines_per_row
+            row_num = -1
+            ax = axarr[row_num, col_num]
+            ax.set_xticks([])
+        plt.show()
+        return 1
+
+
+    def integrateImageAlongCurvature(self, image_to_integrate, header, n_std_for_strong_line, save_intermediate_images = 0, define_new_anchor_pix = 0, redetermine_spec_range = 1, reference_image = 0, determine_new_line_curvature = 0, apply_background_correction = 0 ):
+         """
+         Takes a 2d image of a spectrum and returns a 1d spectrum, integrated
+             along the measured curvature of the lines.  This function does
+             so by stitching together many of the subfunctions above.  No heavy
+             analysis is done in this function - it just stitches together
+             other methods.
+         """
+         print ('[self.spec_range == None, redetermine_spec_range] = ' + str([self.spec_range == None, redetermine_spec_range]))
+         if self.spec_range == None or redetermine_spec_range:
+             self.spec_range = self.determineSpecRowRanges(image_to_integrate, showIDedLines = self.show_fits, save_perp_spec_image = self.save_perp_spec_image, perp_spec_image_name = self.target_dir + self.perp_spec_image_name)
+         else:
+             print ('Using reference spectral range... ')
+         if define_new_anchor_pix:
+             self.anchor_parallel_pix = ( self.spec_range[1] + self.spec_range[0] ) // 2
+
+         print ('self.spec_range = ' + str(self.spec_range))
+
+         if save_intermediate_images:
+             can.saveDataToFitsFile(np.transpose(self.current_image), self.processed_file, self.target_dir, header = self.current_header, overwrite = True, n_mosaic_extensions = 0)
+             print ('Just saved processed file to: ' + self.target_dir + self.processed_file)
+
+         if determine_new_line_curvature or self.strong_line_2d_profile_fit == None:
+             print ('self.n_std_for_strong_line = ' + str(self.n_std_for_strong_line ))
+             if reference_image:
+                 line_fit_width = self.width_pix_sample_to_fit_ref_line
+             else:
+                 line_fit_width = self.width_pix_sample_to_fit_line
+             self.strong_lines = self.detectLinesInImage(self.current_image, self.spec_range,
+                                                   n_std_for_lines = n_std_for_strong_line, line_fit_width = line_fit_width,
+                                                   search_binning = self.strong_line_search_binning, fit_binning = self.strong_line_fit_binning,
+                                                   max_line_fit_width = self.max_line_fit_width, parallel_smoothing = self.parallel_smoothing,
+                                                   width_guess = self.line_width_guess, show_process = self.show_fits,
+                                                   max_sep_per_pix = self.max_sep_per_pixel_for_line_trace, min_detections = self.min_detections_for_ident_as_line ,
+                                                   draw_stats_below = self.background_low, buffer_for_line_background_stats = self.background_buffer,
+                                                   )
+
+             if len(self.strong_lines) < 1:
+                 print ('Failed to identify any statistically significant lines in images stacked from ' + str(images_to_reduce))
+                 return [[], [], [], []]
+
+             #print ('strong_lines = ' + str(strong_lines))
+             line_pix_vals = can.union([[line_slice[0] for line_slice in line] for line in self.strong_lines])
+             line_range = [min(line_pix_vals), max(line_pix_vals)]
+             for i in range(len(self.strong_lines)):
+                 line = self.strong_lines[i]
+
+             self.strong_line_profiles = [self.getLineFunction(line,
+                                                     position_order = self.line_mean_fit_order,
+                                                     A_of_x_order = self.line_amplitude_fit_order, sig_of_x_order = self.line_width_fit_order)
+                                     for line in self.strong_lines]
+             self.strong_lines = self.fixContinuousLines(self.strong_lines, self.strong_line_profiles )
+             self.strong_line_profiles = [self.getLineFunction(line,
+                                                     position_order = self.line_mean_fit_order,
+                                                     A_of_x_order = self.line_amplitude_fit_order, sig_of_x_order = self.line_width_fit_order)
+                                     for line in self.strong_lines]
+             if self.show_fits:
+                 for strong_line in self.strong_lines:
+                     plt.plot([line_slice[2] for line_slice in strong_line], [line_slice[0] for line_slice in strong_line])
+                 plt.xlabel('Column number (pix)')
+                 plt.ylabel('Line number (pix)')
+                 plt.title('Profiles of identified lines')
+                 plt.show()
+
+             line_fit_mean_areas = [integrate.quad(lambda x: strong_line_profile[2](x) * strong_line_profile[3](x), strong_line_profile[0][0], strong_line_profile[0][-1])[0] / (strong_line_profile[0][-1] - strong_line_profile[0][0])
+                              for strong_line_profile in self.strong_line_profiles ]
+             if self.show_fits:
+                 f, axarr = plt.subplots(2,2, figsize = self.default_figsize)
+                 for i in range(len(self.strong_line_profiles)):
+                     strong_line_profile = self.strong_line_profiles[i]
+                     axarr[0,0].plot(strong_line_profile[0], [strong_line_profile[1](x) for x in strong_line_profile[0]])
+                     axarr[0,0].set_xlabel('Row number (pix)')
+                     axarr[0,0].set_ylabel('Center of line')
+                     axarr[0,1].plot(strong_line_profile[0], [strong_line_profile[2](x) for x in strong_line_profile[0]])
+                     axarr[0,1].set_xlabel('Row number (pix)')
+                     axarr[0,1].set_ylabel('Height of line')
+                     axarr[1,0].plot(strong_line_profile[0], [strong_line_profile[3](x) for x in strong_line_profile[0]])
+                     axarr[1,0].set_xlabel('Row number (pix)')
+                     axarr[1,0].set_ylabel('Width of line')
+                     axarr[1,1].plot(strong_line_profile[0], [2.0 * np.pi * strong_line_profile[2](x) * strong_line_profile[3](x) for x in strong_line_profile[0] ] )
+                     axarr[1,1].set_xlabel('Row number (pix)')
+                     axarr[1,1].set_ylabel('Area of line')
+                     axarr[0,0].text(strong_line_profile[0][0], strong_line_profile[1](strong_line_profile[0][0]), str(i) )
+                     axarr[0,1].text(strong_line_profile[0][0], strong_line_profile[2](strong_line_profile[0][0]), str(i) )
+                     axarr[1,0].text(strong_line_profile[0][0], strong_line_profile[3](strong_line_profile[0][0]), str(i) )
+                     axarr[1,1].text(strong_line_profile[0][0], 2.0 * np.pi * strong_line_profile[2](strong_line_profile[0][0]) * strong_line_profile[3](strong_line_profile[0][0]), str(i) )
+                     plt.tight_layout()
+                 plt.show()
+
+             #These give line fits in 2d => You provide an x0 (column along the central line) and a y (row number) and
+             #   and these gives the x where the line profile that passes through x0, central line intersects row y.
+             self.strong_line_2d_profile_fit = self.get2DLineFunction(self.strong_lines, [0.0, self.anchor_parallel_pix])
+             if self.show_fits:
+                 self.showCurvatureFits(self.strong_lines, self.strong_line_profiles, self.strong_line_2d_profile_fit)
+
+         #We now sum the spectrum along the interpolated lines of curvature, as determined from the strong lines.
+
+         print ('Binning spectrum, along curvature of lines...')
+         #parallel_spec_pixels, self.full_pix_interp = self.measureFullPixelSpectrumOld(self.current_image, self.spec_range, undo_line_curvature_dict)
+         parallel_spec_pixels, self.full_pix_interp = self.measureFullPixelSpectrum(self.current_image, self.spec_range, self.strong_line_2d_profile_fit)
+         #We also do the same thing on a region above or below to determine the background statistics for our binned spectrum
+         if self.background_low:
+             stat_region = [max(0, self.spec_range[0] - self.background_buffer - (self.spec_range[1] - self.spec_range[0]) ), self.spec_range[0] - self.background_buffer ]
+         else:
+             stat_region = [self.spec_range[1] + self.background_buffer,
+                            min(np.shape(self.current_image)[self.spec_axis], search_range[1] + self.background_buffer + (self.spec_range[1] - self.spec_range[0])) ]
+         #print ('stat_region = ' + str(stat_region))
+         print ('Binning background in the same way as the spectrum...')
+         background_inserted_spectrum = np.copy(self.current_image)
+         print ('[self.spec_range, self.stat_region] = ' + str([self.spec_range, stat_region] ))
+         if self.spec_axis == 0:
+             if self.spec_range[1] -self.spec_range[0] <= stat_region[1] - stat_region[0]:
+                 background_inserted_spectrum[self.spec_range[0]:self.spec_range[1], :] = self.current_image[stat_region[0]:stat_region[1], :]
+             else:
+                 stat_region_len = (stat_region[1] - stat_region[0])
+                 if self.background_low:
+                     background_inserted_spectrum[self.spec_range[1] - stat_region_len:self.spec_range[1], :] = self.current_image[stat_region[0]:stat_region[1], :]
+                     background_inserted_spectrum[self.spec_range[0]:self.spec_range[1] - stat_region_len, :] = np.median(self.current_image[stat_region[0]:stat_region[1], :], axis = 0)
+                 else:
+                     background_inserted_spectrum[self.spec_range[0]:self.spec_range[0] + stat_region_len, :] = self.current_image[stat_region[0]:stat_region[1], :]
+                     background_inserted_spectrum[self.spec_range[0] + stat_region_len:self.spec_range[1], :] = np.median(self.current_image[stat_region[0]:stat_region[1], :], axis = 0)
+         else:
+             background_inserted_spectrum[:, self.spec_range[0]:self.spec_range[1]] =  self.current_image[:, stat_region[0]:stat_region[1]]
+
+         can.saveDataToFitsFile(background_inserted_spectrum, 'ArrayFromWhichBackgroundStatsAreComputed.fits', self.target_dir)
+         self.stat_slice_pixels, self.stat_slice_interp = self.measureFullPixelSpectrum(background_inserted_spectrum, self.spec_range, self.strong_line_2d_profile_fit)
+
+         full_pix_spectrum = self.full_pix_interp(parallel_spec_pixels)
+         #full_pix_background = self.background_pix_interp(self.stat_slice_pixels)
+         full_pix_background_stats = self.stat_slice_interp(self.stat_slice_pixels)
+
+         return parallel_spec_pixels, full_pix_spectrum, full_pix_background_stats
+
+    def initializeScatterKey(self, scatter_data_dir = None, scatter_data_key_file = None):
+        """
+        This function sets up the mapper between monochromatic wavelengths
+           at which the scatter was measured and the corresponding .fits
+           files containing the measured scatter pattern.  Ths result is a
+           dictionary going between wavelength and fits file name (the data
+           arrays themselves are not yet read in, as they would occupy too
+           much RAM).
+        """
+        if scatter_data_dir == None:
+            scatter_data_dir = self.scatter_data_dir
+        if scatter_data_key_file == None:
+            scatter_data_key_file = self.scatter_data_key_file
+        scatter_data_cols = can.readInColumnsToList(scatter_data_key_file, file_dir = scatter_data_dir, n_ignore = 1, delimiter = ',')
+        scatter_data_wavelengths = [int(wave) for wave in scatter_data_cols[0]]
+        scatter_data_files = [f for f in scatter_data_cols[1]]
+        scatter_data_wavelengths , scatter_data_files = can.safeSortOneListByAnother(scatter_data_wavelengths, [scatter_data_wavelengths, scatter_data_files])
+        self.scatter_data_mapping = [scatter_data_wavelengths , scatter_data_files]
+        return 1
+
+    def determineScatterFunctByWavelength(self, wavelength):
+        """
+        Determines the 2d scatter pattern at the specified wavelength. This
+            is done by interpolating between pixel values for two scatter
+            .fits files at the closest sampled longer and shorter wavelengths.
+            The interpolating is done linearly.
+        The result is a 2d spectrum, describing the scatter pattern for a
+            single ADU at the specified wavelength.
+        """
+        closest_wavelength_index = np.argmin(np.abs(wavelength - np.array(self.scatter_data_mapping[0])))
+        if closest_wavelength_index == 0 or closest_wavelength_index == len(self.scatter_data_mapping[0]) - 1:
+            #print ('Wavelength ' + str(wavelength) + ' beyond mapping.  Will not correct this scatter. ')
+            closest_wavelength_indeces = [closest_wavelength_index, closest_wavelength_index]
+        elif wavelength > self.scatter_data_mapping[0][closest_wavelength_index]:
+            closest_wavelength_indeces = [closest_wavelength_index, closest_wavelength_index + 1]
+        else:
+            closest_wavelength_indeces = [closest_wavelength_index - 1, closest_wavelength_index]
+        closest_wavelengths = [self.scatter_data_mapping[0][index] for index in closest_wavelength_indeces]
+        interp_images = [can.readInDataFromFitsFile(self.scatter_data_mapping[1][index], self.scatter_data_dir)[0] for index in closest_wavelength_indeces]
+        print ('For wavelength ' + str(wavelength) + ', interpolating between images ' + str([self.scatter_data_mapping[1][closest_wavelength_indeces[0]], self.scatter_data_mapping[1][closest_wavelength_indeces[1]]]) )
+        #If both indeces are the same, we're trying to interpolate beyond the sampled range.  So return 0s (no scatter correction).
+        if closest_wavelength_indeces[0] == closest_wavelength_indeces[1]:
+            scatter_image = interp_images[0] * 0.0
+        else:
+            scatter_image_slopes = (interp_images[1] - interp_images[0]) / (closest_wavelengths[1] - closest_wavelengths[0])
+            scatter_image = interp_images[0] + (wavelength - closest_wavelengths[0]) * scatter_image_slopes
+        return scatter_image
+
+    def determineScatterFromScatterImages(self, parallel_spec_pixels, parallel_spec_wavelengths, full_pix_spectrum, full_pix_background_stats, scatter_image_file_name = None):
+        """
+        For a 1d spectrum given by parallel_spec_pixels (pixels),
+            parallel_spec_wavelengths (wavelengths), full_pix_spectrum (spectral
+            values), determines the 2d image of scattered light, inferred from
+            the scatter image mapping.
+        This is done by identifying which sections of the spectrum are
+            sufficiently bright (exceeding the background by some specified
+            standard deviation amount), interpolating the scatter patterns
+            for those wavelengths, scaling them by the number of ADU at that
+            wavelength, and adding those together to form a scatter pattern.
+            This 2d map of overall scatter is what we return.
+        """
+        std_thresh_for_scatter_correct = self.std_thresh_for_scatter_correct
+        pix_std = np.std(full_pix_background_stats)
+        if scatter_image_file_name == None:
+            scatter_image_file_name = self.scatter_image_file_name
+        self.initializeScatterKey()
+        bright_indeces = [i for i in range(len(parallel_spec_wavelengths)) if full_pix_spectrum[i] > std_thresh_for_scatter_correct * pix_std + full_pix_background_stats[i] ]
+
+        plt.plot(parallel_spec_pixels, full_pix_spectrum, c = 'g')
+        plt.plot(parallel_spec_pixels, full_pix_background_stats, c = 'k')
+        plt.plot(parallel_spec_pixels, std_thresh_for_scatter_correct * pix_std + full_pix_background_stats, c = 'r')
+        plt.scatter(bright_indeces, [ full_pix_spectrum[i] for i in bright_indeces], c = 'orange', marker = 'x')
+        plt.show()
+        scatter_image = self.determineScatterFunctByWavelength(parallel_spec_wavelengths[0]) * full_pix_spectrum[bright_indeces[0]]
+        #scatter_image = self.determineScatterFunctByWavelength(self.wavelength_of_mu_solution(lines_to_scatter[0][1])) * lines_to_scatter[0][0] * np.sqrt(2.0 * np.pi) * lines_to_scatter[0][2]
+        f, axarr = plt.subplots(1,2, figsize = (12, 6) )
+        for i in bright_indeces[1:]:
+            start = time.time()
+            #sys.stdout.write('Determining scatter solution... We are ' + str(int (i / len(parallel_spec_wavelengths) * 100)) + '% done)...' )
+            #sys.stdout.flush()
+            #line_pixel, total_line_flux =  [lines_to_scatter[i][1], lines_to_scatter[i][0] * np.sqrt(2.0 * np.pi) * lines_to_scatter[i][2]]
+            line_wavelength, wavelength_flux = [parallel_spec_wavelengths[i], full_pix_spectrum[i]]
+            #line_wavelength = self.wavelength_of_mu_solution(line_pixel)
+            new_scatter_image = self.determineScatterFunctByWavelength(line_wavelength) * wavelength_flux
+            print ('[i, line_wavelength, self.mu_of_wavelength_solution(line_wavelength), wavelength_flux] = ' + str([i, line_wavelength, self.mu_of_wavelength_solution(line_wavelength), wavelength_flux]))
+            scatter_image = scatter_image + new_scatter_image
+            axarr[0].imshow(scatter_image)
+            axarr[1].imshow(new_scatter_image)
+            end = time.time()
+        print ("")
+        #plt.show()
+        #plt.imshow(scatter_image)
+        #plt.show()
+        can.saveDataToFitsFile(scatter_image, scatter_image_file_name, self.scatter_data_dir, header = 'default')
+        return scatter_image_file_name
+
+    def reduceImagesTo1dSpectrum(self, images_to_reduce, n_std_for_strong_line, save_intermediate_images = 0, define_new_anchor_pix = 0, save_image_name = None, redetermine_spec_range = 1, crc_correct = None, reference_image = 0, bin_along_curve = 1, determine_new_line_curvature = 0, normalize = 0, apply_background_correction = 0, apply_scatter_correction = 0, spec_in_wavelengths = 1):
+        """
+        This is the primary called function if the user has a list of
+            signals images that they want to produce to a (single,
+            stacked) 1d spectrum.  It performs the intermediate analysis
+            steps (in the appropriate order).
+        To measure how sky lines change over time, this function should
+            be called on the sky images INDIVIDUALLY (each image being
+            given as its own list of text files of length 1).  This is
+            because all given images are averaged together, post analysis.
+        """
         #Makes self.current_images point to an array of the coadded, reduced images_to_reduce
-        current_image, current_header = self.processImages(spec_files_to_reduce = images_to_reduce, save_image_name = save_image_name, crc_correct = crc_correct)
         self.image_roots = [spec_file[0:-len(self.data_image_suffix)] for spec_file in images_to_reduce]
+        self.perp_spec_image_name = self.image_roots[0] + self.perp_spec_image_suffix + self.figure_suffix
         self.processed_file = self.image_roots[0] + self.processed_file_suffix + self.data_image_suffix
         self.processed_spectrum = self.image_roots[0] + self.processed_spectra_image_suffix + self.figure_suffix
-        self.perp_spec_image_name = self.image_roots[0] + self.perp_spec_image_suffix + self.figure_suffix
-        print ('[self.spec_range == None, redetermine_spec_range] = ' + str([self.spec_range == None, redetermine_spec_range]))
-        if self.spec_range == None or redetermine_spec_range:
-            self.spec_range = self.determineSpecRowRanges(self.current_image, showIDedLines = self.show_fits, save_perp_spec_image = self.save_perp_spec_image, perp_spec_image_name = self.target_dir + self.perp_spec_image_name)
-        else:
-            print ('Using reference spectral range... ')
-        if define_new_anchor_pix:
-            self.anchor_parallel_pix = ( self.spec_range[1] + self.spec_range[0] ) // 2
-
-        print ('self.spec_range = ' + str(self.spec_range))
-        self.current_image = self.correctBackground(self.current_image, self.spec_range, self.background_buffer, self.background_size, background_low = self.background_low, )
-
-        if save_intermediate_images:
-            can.saveDataToFitsFile(np.transpose(self.current_image), self.processed_file, self.target_dir, header = self.current_header, overwrite = True, n_mosaic_extensions = 0)
-            print ('Just saved processed file to: ' + self.target_dir + self.processed_file)
-
-        if bin_along_curve :
-            print ('self.n_std_for_strong_line = ' + str(self.n_std_for_strong_line ))
-            if reference_image:
-                self.strong_lines = self.detectLinesInImage(self.current_image, self.spec_range,
-                                                  n_std_for_lines = n_std_for_strong_line, line_fit_width = self.width_pix_sample_to_fit_ref_line,
-                                                  search_binning = self.strong_line_search_binning, fit_binning = self.strong_line_fit_binning,
-                                                  max_line_fit_width = self.max_line_fit_width, parallel_smoothing = self.parallel_smoothing,
-                                                  width_guess = self.line_width_guess, show_process = self.show_fits,
-                                                  max_sep_per_pix = self.max_sep_per_pixel_for_line_trace, min_detections = self.min_detections_for_ident_as_line ,
-                                                  draw_stats_below = self.background_low, buffer_for_line_background_stats = self.background_buffer,
-                                                  )
-            else:
-                self.strong_lines = self.detectLinesInImage(self.current_image, self.spec_range,
-                                                  n_std_for_lines = n_std_for_strong_line, line_fit_width = self.width_pix_sample_to_fit_line,
-                                                  search_binning = self.strong_line_search_binning, fit_binning = self.strong_line_fit_binning,
-                                                  max_line_fit_width = self.max_line_fit_width, parallel_smoothing = self.parallel_smoothing,
-                                                  width_guess = self.line_width_guess, show_process = self.show_fits,
-                                                  max_sep_per_pix = self.max_sep_per_pixel_for_line_trace, min_detections = self.min_detections_for_ident_as_line ,
-                                                  draw_stats_below = self.background_low, buffer_for_line_background_stats = self.background_buffer,
-                                                  )
-            if len(self.strong_lines) < 1:
-                print ('Failed to identify any statistically significant lines in images stacked from ' + str(images_to_reduce))
-                return [[], [], [], []]
-
-            #print ('strong_lines = ' + str(strong_lines))
-            line_pix_vals = can.union([[line_slice[0] for line_slice in line] for line in self.strong_lines])
-            line_range = [min(line_pix_vals), max(line_pix_vals)]
-            for i in range(len(self.strong_lines)):
-                line = self.strong_lines[i]
-
-            self.strong_line_profiles = [self.getLineFunction(line,
-                                                    position_order = self.line_mean_fit_order,
-                                                    A_of_x_order = self.line_amplitude_fit_order, sig_of_x_order = self.line_width_fit_order)
-                                    for line in self.strong_lines]
-            self.strong_lines = self.fixContinuousLines(self.strong_lines, self.strong_line_profiles )
-            self.strong_line_profiles = [self.getLineFunction(line,
-                                                    position_order = self.line_mean_fit_order,
-                                                    A_of_x_order = self.line_amplitude_fit_order, sig_of_x_order = self.line_width_fit_order)
-                                    for line in self.strong_lines]
-            if self.show_fits:
-                for strong_line in self.strong_lines:
-                    plt.plot([line_slice[2] for line_slice in strong_line], [line_slice[0] for line_slice in strong_line])
-                plt.xlabel('Column number (pix)')
-                plt.ylabel('Line number (pix)')
-                plt.title('Profiles of identified lines')
-                plt.show()
-
-            line_fit_mean_areas = [integrate.quad(lambda x: strong_line_profile[2](x) * strong_line_profile[3](x), strong_line_profile[0][0], strong_line_profile[0][-1])[0] / (strong_line_profile[0][-1] - strong_line_profile[0][0])
-                             for strong_line_profile in self.strong_line_profiles ]
-            if self.show_fits:
-                f, axarr = plt.subplots(2,2, figsize = self.default_figsize)
-                for i in range(len(self.strong_line_profiles)):
-                    strong_line_profile = self.strong_line_profiles[i]
-                    axarr[0,0].plot(strong_line_profile[0], [strong_line_profile[1](x) for x in strong_line_profile[0]])
-                    axarr[0,0].set_xlabel('Row number (pix)')
-                    axarr[0,0].set_ylabel('Center of line')
-                    axarr[0,1].plot(strong_line_profile[0], [strong_line_profile[2](x) for x in strong_line_profile[0]])
-                    axarr[0,1].set_xlabel('Row number (pix)')
-                    axarr[0,1].set_ylabel('Height of line')
-                    axarr[1,0].plot(strong_line_profile[0], [strong_line_profile[3](x) for x in strong_line_profile[0]])
-                    axarr[1,0].set_xlabel('Row number (pix)')
-                    axarr[1,0].set_ylabel('Width of line')
-                    axarr[1,1].plot(strong_line_profile[0], [2.0 * np.pi * strong_line_profile[2](x) * strong_line_profile[3](x) for x in strong_line_profile[0] ] )
-                    axarr[1,1].set_xlabel('Row number (pix)')
-                    axarr[1,1].set_ylabel('Area of line')
-                    axarr[0,0].text(strong_line_profile[0][0], strong_line_profile[1](strong_line_profile[0][0]), str(i) )
-                    axarr[0,1].text(strong_line_profile[0][0], strong_line_profile[2](strong_line_profile[0][0]), str(i) )
-                    axarr[1,0].text(strong_line_profile[0][0], strong_line_profile[3](strong_line_profile[0][0]), str(i) )
-                    axarr[1,1].text(strong_line_profile[0][0], 2.0 * np.pi * strong_line_profile[2](strong_line_profile[0][0]) * strong_line_profile[3](strong_line_profile[0][0]), str(i) )
-                    plt.tight_layout()
-                plt.show()
-
-            print ('line_fit_mean_areas = ' + str(line_fit_mean_areas))
-
-            #We now sum the spectrum along the interpolated lines of curvature, as determined from the strong lines.
-            undo_line_curvature_dict = self.determineMacroLineCurvatureDict (self.spec_range, self.strong_line_profiles)
-            #print ('undo_line_curvature_dict = ' + str(undo_line_curvature_dict))
-            print ('Binning spectrum, along curvature of lines...')
-            parallel_spec_pixels, self.full_pix_interp = self.measureFullPixelSpectrum(self.current_image, self.spec_range, undo_line_curvature_dict)
-            #We also do the same thing on a region above or below to determine the background statistics for our binned spectrum
-            if self.background_low:
-                stat_region = [max(0, self.spec_range[0] - self.background_buffer - (self.spec_range[1] - self.spec_range[0]) ), self.spec_range[0] - self.background_buffer ]
-            else:
-                stat_region = [self.spec_range[1] + self.background_buffer,
-                               min(np.shape(self.current_image)[self.spec_axis], search_range[1] + self.background_buffer + (self.spec_range[1] - self.spec_range[0])) ]
-            #print ('stat_region = ' + str(stat_region))
-            print ('Binning background in the same way as the spectrum...')
-            background_inserted_spectrum = np.copy(self.current_image)
-            print ('[self.spec_range, self.stat_region] = ' + str([self.spec_range, stat_region] ))
-            if self.spec_axis == 0:
-                if self.spec_range[1] -self.spec_range[0] <= stat_region[1] - stat_region[0]:
-                    background_inserted_spectrum[self.spec_range[0]:self.spec_range[1], :] = self.current_image[stat_region[0]:stat_region[1], :]
-                else:
-                    stat_region_len = (stat_region[1] - stat_region[0])
-                    if self.background_low:
-                        background_inserted_spectrum[self.spec_range[1] - stat_region_len:self.spec_range[1], :] = self.current_image[stat_region[0]:stat_region[1], :]
-                        background_inserted_spectrum[self.spec_range[0]:self.spec_range[1] - stat_region_len, :] = np.median(self.current_image[stat_region[0]:stat_region[1], :], axis = 0)
-                    else:
-                        background_inserted_spectrum[self.spec_range[0]:self.spec_range[0] + stat_region_len, :] = self.current_image[stat_region[0]:stat_region[1], :]
-                        background_inserted_spectrum[self.spec_range[0] + stat_region_len:self.spec_range[1], :] = np.median(self.current_image[stat_region[0]:stat_region[1], :], axis = 0)
-
-            else:
-                background_inserted_spectrum[:, self.spec_range[0]:self.spec_range[1]] =  self.current_image[:, stat_region[0]:stat_region[1]]
-
-            can.saveDataToFitsFile(background_inserted_spectrum, 'ArrayFromWhicBackgroundStatsAreComputed.fits', self.target_dir)
-            self.stat_slice_pixels, self.stat_slice_interp = self.measureFullPixelSpectrum(background_inserted_spectrum, self.spec_range, undo_line_curvature_dict)
-
+        current_image, current_header = self.processImages(spec_files_to_reduce = images_to_reduce, save_image_name = save_image_name, crc_correct = crc_correct, apply_background_correction = apply_background_correction, scatter_correction_file = None, redetermine_spec_range = redetermine_spec_range)
+        parallel_spec_pixels, full_pix_spectrum, full_pix_background_stats = self.integrateImageAlongCurvature(current_image, current_header, n_std_for_strong_line, save_intermediate_images = save_intermediate_images, define_new_anchor_pix = define_new_anchor_pix, redetermine_spec_range = redetermine_spec_range, reference_image = reference_image, determine_new_line_curvature = determine_new_line_curvature )
+        if spec_in_wavelengths:
             parallel_spec_wavelengths = [self.wavelength_of_mu_solution(pix) for pix in parallel_spec_pixels]
-            full_pix_spectrum = self.full_pix_interp(parallel_spec_pixels)
-            full_pix_background_stats = self.stat_slice_interp(self.stat_slice_pixels)
+            if apply_scatter_correction:
+                scatter_image_file_name = self.determineScatterFromScatterImages(parallel_spec_pixels, parallel_spec_wavelengths, full_pix_spectrum, full_pix_background_stats)
+                print ('scatter_image_file_name = ' + str(scatter_image_file_name))
+                current_image, current_header = self.processImages(spec_files_to_reduce = images_to_reduce, save_image_name = save_image_name, crc_correct = crc_correct, apply_background_correction = apply_background_correction, scatter_correction_file = scatter_image_file_name, redetermine_spec_range = redetermine_spec_range)
+                parallel_spec_pixels, full_pix_spectrum, full_pix_background_stats = self.integrateImageAlongCurvature(current_image, current_header, n_std_for_strong_line, save_intermediate_images = save_intermediate_images, define_new_anchor_pix = define_new_anchor_pix, redetermine_spec_range = redetermine_spec_range, reference_image = reference_image, determine_new_line_curvature = determine_new_line_curvature)
+
+        #If the throughput is 0, replace with infinity so that the normalized spectrum value is 0.
+        if spec_in_wavelengths:
+            throughput = self.throughput_interp(parallel_spec_wavelengths)
+            nm_subtended_by_pixels = [self.wavelength_of_mu_solution(pix + 0.5) - self.wavelength_of_mu_solution(pix - 0.5) for pix in parallel_spec_pixels]
+            throughput[throughput == 0] = np.inf
 
             if self.show_fits:
                 max_full = np.max(full_pix_spectrum[self.spec_range[0]:self.spec_range[1]])
@@ -1757,8 +2227,10 @@ class SpectrumProcessor:
                 spec = plt.plot(parallel_spec_wavelengths, full_pix_spectrum / max_full , c = 'g')[0]
                 background = plt.plot(parallel_spec_wavelengths, full_pix_background_stats / max_full, c = 'r')[0]
 
-            full_pix_spectrum = full_pix_spectrum / self.throughput_interp(parallel_spec_wavelengths)
-            full_pix_background_stats = full_pix_background_stats / self.throughput_interp(parallel_spec_wavelengths)
+            #I want the sky brightness in Ry/nm, and so I must divide out the wavelength range
+            #  our pixels subtend.
+            full_pix_spectrum = full_pix_spectrum / throughput / nm_subtended_by_pixels
+            full_pix_background_stats = full_pix_background_stats / throughput / nm_subtended_by_pixels
             max_full = np.max(full_pix_spectrum[self.spec_range[0]:self.spec_range[1]])
             max_ref = max(full_pix_background_stats[self.spec_range[0]:self.spec_range[1]])
             if self.show_fits:
@@ -1780,12 +2252,18 @@ class SpectrumProcessor:
             parallel_spec_pixels = list(range(len(full_pix_spectrum)))
             print ('[binned_spec, parallel_spec_pixels] = ' + str([full_pix_spectrum, parallel_spec_pixels]))
             print ('[len(binned_spec), len(parallel_spec_pixels)] = ' + str([len(full_pix_spectrum), len(parallel_spec_pixels)]))
-            full_pix_background_stats = []
-
+            #full_pix_background_stats = []
 
         return parallel_spec_pixels, full_pix_spectrum , full_pix_background_stats, self.current_header
 
     def measureSystemThroughtput(self, throughput_files_list, target_dir = None, show_fits = 1):
+        """
+        From a set of measurement files used to measure the throughput (ideally
+            a stack of spectra of a known light source producing a uniform background
+            illumination pattern), this function measures the throughput of OSELOTS.
+        This function does not need to be run every time the instrument is used -
+            only when the throughput needs to be remeasured.
+        """
         if target_dir == None:
             target_dir = self.target_dir
         if show_fits != None:
@@ -1819,6 +2297,11 @@ class SpectrumProcessor:
 
 
     def computeReferenceSpectrum(self, ref_spec_images_list = None, save_new_reference_spectrum = 1, data_dir = None, spec_save_dir = None, ref_spec = None ):
+        """
+        Computes the reference spectrum from a list of spectral reference images
+            (usually an "arclamp", like the KR1), and saves the wavelength solution
+            as callable functions (going wavelength to pixel and pixel to wavelength).
+        """
         if ref_spec_images_list == None:
             ref_spec_images_list = self.ref_spec_images_list
         if data_dir == None:
@@ -1835,7 +2318,8 @@ class SpectrumProcessor:
         n_ignore_throughput = self.spec_archival_info['throughput']['n_lines_to_ignore']
 
         ref_spec_image_files = can.readInColumnsToList(ref_spec_images_list, file_dir = data_dir, n_ignore = 0, )[0]
-        self.parallel_ref_spec_pixels, self.full_ref_pix_spectrum, self.full_ref_pix_background_stats, self.stacked_header = self.reduceImagesTo1dSpectrum(ref_spec_image_files, self.n_std_for_strong_ref_line, define_new_anchor_pix = 1, save_intermediate_images = 1, crc_correct = 0, reference_image = 1)
+        print ('ref_spec_image_files = ' + str(ref_spec_image_files))
+        self.parallel_ref_spec_pixels, self.full_ref_pix_spectrum, self.full_ref_pix_background_stats, self.stacked_header = self.reduceImagesTo1dSpectrum(ref_spec_image_files, self.n_std_for_strong_ref_line, define_new_anchor_pix = 1, save_intermediate_images = 1, crc_correct = 0, reference_image = 1, apply_background_correction = 0, spec_in_wavelengths = 0)
         if len(self.full_ref_pix_spectrum) < 1:
             print ('Failed to identify lines in reference image list ' + str(ref_spec_images_list))
             false_wavelength_solution = np.zeros(self.wavelength_solution_order)
@@ -1844,13 +2328,20 @@ class SpectrumProcessor:
             return [mu_of_wavelength_solution, wavelength_of_mu_solution]
         #print ('[full_pix_spectrum, full_pix_background_stats] = ' + str([full_pix_spectrum, full_pix_background_stats]))
 
-        self.full_ref_absorbtion_crossings, self.full_ref_emission_crossings = self.detectLinesCentersInOneD(self.parallel_ref_spec_pixels, self.full_ref_pix_spectrum, self.full_ref_pix_background_stats, spec_grad_rounding = 5, n_std_for_line = self.n_std_for_full_ref_line, show = self.show_fits)
+        f, axarr = plt.subplots(2,1)
+        print ('self.full_ref_pix_background_stats = ' + str(self.full_ref_pix_background_stats))
+        axarr[0].plot(self.parallel_ref_spec_pixels, self.full_ref_pix_spectrum, c = 'k')
+        axarr[1].plot(self.parallel_ref_spec_pixels, self.full_ref_pix_background_stats, c = 'k')
+        plt.show()
+        plt.plot(self.full_ref_pix_background_stats)
+        plt.show()
+        self.full_ref_absorbtion_crossings, self.full_ref_emission_crossings = self.detectLinesCentersInOneD(self.parallel_ref_spec_pixels, self.full_ref_pix_spectrum, self.full_ref_pix_background_stats, spec_grad_rounding = 5, n_std_for_line = self.n_std_for_full_ref_line, show = self.show_fits, background_bin_width = self.pix_bin_to_meas_background_noise)
         print ('[self.full_ref_absorbtion_crossings, self.full_ref_emission_crossings] = ' + str([self.full_ref_absorbtion_crossings, self.full_ref_emission_crossings]))
         self.full_ref_emission_crossings = [crossing for crossing in self.full_ref_emission_crossings if (crossing > 0 and crossing < self.parallel_ref_spec_pixels[-1])]
 
         self.full_ref_emission_fits = self.identifyLinesOnSlice(self.parallel_ref_spec_pixels, self.full_ref_pix_spectrum,
-                                 max_line_fit_width = self.width_pix_sample_to_fit_ref_line, peak_guesses = self.full_ref_emission_crossings, show_spec = self.show_fits, verbose = 1,
-                                 fit_lines_with_pedestal = 1, fit_line_width_with_seeing_funct = 0)
+                                 max_line_fit_width = self.width_pix_sample_to_fit_ref_line, peak_guesses = self.full_ref_emission_crossings, show_spec = self.show_fits, verbose = 0,
+                                 fit_lines_with_pedestal = 1, fit_line_width_with_seeing_funct = 0,  background_bin_width = self.background_bin_width_for_line_id_in_slice)
 
         print ('self.full_ref_emission_fits = ' + str(self.full_ref_emission_fits))
         #self.full_emission_centroids = [fit[1] for fit in self.full_emission_fits]
@@ -1867,6 +2358,11 @@ class SpectrumProcessor:
         return [mu_of_wavelength_solution, wavelength_of_mu_solution]
 
     def getWavelengthSolution(self, ref_spec_images_list = None, ref_spec_solution_file = None, save_new_reference_spectrum = 1, ref_spec = None, show_fits = None):
+        """
+        Initializes the wavelength solution for the spectral processor,
+            either reading in a saved spectral solution or determining
+            the spectral solution from a list of spectral images.
+        """
         if show_fits != None:
             self.show_fits = show_fits
         if ref_spec_images_list != None:
@@ -1884,6 +2380,14 @@ class SpectrumProcessor:
         return 1
 
     def subtractContinuum(self, pixels, spec_of_pixels, used_continuum_seeds = None, continuum_smoothing = None, n_continuum_fit_seeds = None, min_line_vs_seed_sep = None, show_fits = None):
+        """
+        Subtract off the spline-fitted continuum of the 1d spectrum from the 1d spectrum. The
+            continuum is determined by splinning between the spectrum at a pre-selected set of
+            wavelengths (either given as the used_continuum_seeds parameter or read in from
+            the continuum_seeds_file class variable).
+        Subtracting the continuum is necessary because we are interested in measuring the
+            intensities of the sky emission lines.
+        """
         if used_continuum_seeds == None:
             used_continuum_seeds = can.readInColumnsToList(self.continuum_seeds_file, self.archival_data_dir, n_ignore = self.n_ignore_for_continuum_seeds, convert_to_float = 1) [0]
         used_continuum_seed_indeces = [int(self.mu_of_wavelength_solution(seed)) for seed in used_continuum_seeds]
@@ -1925,6 +2429,13 @@ class SpectrumProcessor:
 
 
     def correctThroughput(self, spec_wavelengths, spec_to_correct, throughput_file = None, throughput_data = None, throughput_file_delimiter = ' ', n_lines_to_ignore = 0, throughput_file_dir = None):
+        """
+        Used the measured throughput of OSELOTS to convert the measured spectrum
+            in ADUs vs wavelength to a true sky measurement of Rayleighs vs
+            wavelength. If the system throughput has not already been read in,
+            this function will first initialize it (using the importSystemThroughput
+            function).
+        """
         print ('self.throughput_interp = ' + str(self.throughput_interp))
         if throughput_file != None or throughput_data != None or self.throughput_interp == None:
             self.throughput_interp = self.importSystemThroughput(throughput_file = throughput_file, throughput_data = throughput_data, throughput_file_delimiter = throughput_file_delimiter, n_lines_to_ignore = n_lines_to_ignore, throughput_file_dir = throughput_file_dir)
@@ -1935,6 +2446,12 @@ class SpectrumProcessor:
 
 
     def measureStrengthOfLinesInImage(self, image_to_measure, show_fits = None, line_dict_id = None, redetermine_spec_range = 0):
+        """
+        For a single, unprocessed image file, this measures the strength of the
+           emission lines in that image.  It stitches together all of the
+           analysis, from reducing the 2d image to a 1d spectrum to subtracting
+           the continuum and identifying lines.
+        """
         if show_fits != None:
             self.show_fits = show_fits
         if self.wavelength_of_mu_solution == None:
@@ -1950,12 +2467,14 @@ class SpectrumProcessor:
         no_background_sub_full_pix_spectrum = full_pix_spectrum[:]
         continuum_interp, full_pix_spectrum, continuum_fit_points = self.subtractContinuum(parallel_spec_pixels, full_pix_spectrum, show_fits = show_fits)
 
-        pix_target_range = [int(self.mu_of_wavelength_solution(self.wavelength_target_range[0])), int(self.mu_of_wavelength_solution(self.wavelength_target_range[1]))]
-        full_absorbtion_crossings, full_emission_crossings = self.detectLinesCentersInOneD(parallel_spec_pixels[pix_target_range[0]:pix_target_range[1]], full_pix_spectrum[pix_target_range[0]:pix_target_range[1]], full_pix_background_stats[pix_target_range[0]:pix_target_range[1]], spec_grad_rounding = 5, n_std_for_line = self.n_std_for_full_line, show = self.show_fits)
+        pix_target_range = [max(int(self.mu_of_wavelength_solution(self.wavelength_target_range[0])), 0), min(int(self.mu_of_wavelength_solution(self.wavelength_target_range[1])), self.max_dimension)]
+
+        full_absorbtion_crossings, full_emission_crossings = self.detectLinesCentersInOneD(parallel_spec_pixels[pix_target_range[0]:pix_target_range[1]], full_pix_spectrum[pix_target_range[0]:pix_target_range[1]], full_pix_background_stats[pix_target_range[0]:pix_target_range[1]], spec_grad_rounding = 5, n_std_for_line = self.n_std_for_full_line, show = self.show_fits, background_bin_width = self.pix_bin_to_meas_background_noise)
 
         init_full_emission_fits = self.identifyLinesOnSlice(range(len(full_pix_spectrum )), full_pix_spectrum,
-                                 max_line_fit_width = self.width_pix_sample_to_fit_line, peak_guesses = self.identified_full_emission_line_centers, show_spec = show_fits, verbose = 1,
-                                 fit_lines_with_pedestal = 0, fit_line_width_with_seeing_funct = 1)
+                                 max_line_fit_width = self.width_pix_sample_to_fit_line, peak_guesses = self.identified_full_emission_line_centers, show_spec = show_fits, verbose = 0,
+                                 fit_lines_with_pedestal = 0, fit_line_width_with_seeing_funct = 1,
+                                 background_bin_width = self.background_bin_width_for_line_id_in_slice)
 
         full_emission_centroids = [fit[1] for fit in init_full_emission_fits]
         seeing_fit_params = self.simulFitLineWidths(np.array(range(len(full_pix_spectrum ))), full_pix_spectrum, init_full_emission_fits)
@@ -1963,8 +2482,9 @@ class SpectrumProcessor:
         seeing_fit_funct = np.poly1d(seeing_fit_params)
         #print ('seeing_fit_funct = ' + str(seeing_fit_funct))
         full_emission_fits = self.identifyLinesOnSlice(range(len(full_pix_spectrum )), full_pix_spectrum,
-                                 max_line_fit_width = self.refined_width_pix_sample_to_fit_line,  peak_guesses = self.identified_full_emission_line_centers, show_spec = self.show_fits, verbose = 1,
-                                 fit_lines_with_pedestal = 0, fit_line_width_with_seeing_funct = 0, seeing_fit_funct = seeing_fit_funct )
+                                 max_line_fit_width = self.refined_width_pix_sample_to_fit_line,  peak_guesses = self.identified_full_emission_line_centers, show_spec = self.show_fits, verbose = 0,
+                                 fit_lines_with_pedestal = 0, fit_line_width_with_seeing_funct = 0, seeing_fit_funct = seeing_fit_funct,
+                                 background_bin_width = self.background_bin_width_for_line_id_in_slice )
         full_emission_fits = [fit for fit in full_emission_fits if fit[1] > parallel_spec_pixels[1] and fit[1] < parallel_spec_pixels[-2] ]
         #print ('full_emission_fits = ' + str(full_emission_fits))
         self.identified_lines_dict[line_dict_id] = { }
@@ -1972,16 +2492,31 @@ class SpectrumProcessor:
         self.identified_lines_dict[line_dict_id][self.obs_time_keyword] = image_header[self.obs_time_keyword]
         identified_full_emission_line_centers = [fit[1] for fit in full_emission_fits]
         identified_full_emission_line_heights = [fit[0] for fit in full_emission_fits]
+        identified_full_emission_line_floors = [fit[3] for fit in full_emission_fits]
 
         if self.show_fits or self.save_final_plot:
-            self.plotFullLineImage(parallel_spec_wavelengths, no_background_sub_full_pix_spectrum, full_pix_background_stats, continuum_interp, full_pix_spectrum,
-                                   identified_full_emission_line_centers, identified_full_emission_line_heights, continuum_fit_points, self.wavelength_of_mu_solution,
+            self.plotFullAnalysisStepImage(parallel_spec_wavelengths, no_background_sub_full_pix_spectrum, full_pix_background_stats, continuum_interp, full_pix_spectrum,
+                                   identified_full_emission_line_centers, identified_full_emission_line_heights, identified_full_emission_line_floors, continuum_fit_points, self.wavelength_of_mu_solution,
                                    self.show_fits, self.save_final_plot, plot_title = 'Spectrum of image: ' + str(line_dict_id),
-                                   save_image_name = image_to_measure[:-len(self.data_image_suffix)] + self.processed_spectra_image_suffix + self.figure_suffix)
+                                   save_image_name = image_to_measure[:-len(self.data_image_suffix)] + self.processed_multistep_spectra_image_suffix + self.figure_suffix)
+            self.plotFullLineImage(parallel_spec_wavelengths, full_pix_spectrum, full_pix_background_stats,
+                                   identified_full_emission_line_centers, identified_full_emission_line_heights, identified_full_emission_line_floors, self.wavelength_of_mu_solution,
+                                   self.show_fits, self.save_final_plot, plot_title = 'Spectrum of image: ' + str(line_dict_id), noise_bin_width = self.pix_bin_to_meas_background_noise,
+                                   save_image_name = image_to_measure[:-len(self.data_image_suffix)] +  self.processed_spectra_image_suffix + self.figure_suffix)
         return 1
 
 
-    def plotLineProfilesInTime(self, n_subplots = 8, n_cols = 2, figsize = (8,16), line_variation_image_name = 'skyLineChangesOverTime.pdf', n_legend_col = 2, legend_text_size = 8, n_ticks = 11, xlabel = r'$\Delta t$ since first exp. (min)', ylabel ='Fitted height of line (ADU)' , y_lims = [-0.05, 1.05]):
+    def plotLineProfilesInTime(self, n_subplots = 8, n_cols = 2, figsize = (8,16), line_variation_image_name = 'skyLineChangesOverTime.pdf', n_legend_col = 2, legend_text_size = 8, n_ticks = 11, xlabel = r'$\Delta t$ since first exp. (min)', ylabel ='Fitted height of line (ADU)' , y_lims = [-0.05, 1.05], line_legend_n_sig_figs = 4):
+        """
+        This function plots the intensities of identified lines in time.  This
+           function should be run AFTER all images have been reduced, as it
+           relies on the existing library of line profiles that have already been
+           generated.
+        The resulting plot shows all line heights, on the same intensity scales,
+           as they vary throughout the night.
+        This function and the plotScaledLineProfilesInTime function show the same
+           data, but in different ways.
+        """
         single_lines = [[] for i in range(n_subplots)]
         if n_subplots == 1:
             f, axarr = plt.subplots(1,1)
@@ -2000,10 +2535,12 @@ class SpectrumProcessor:
         min_time = np.min(timestamps)
         delta_ts = [(time - min_time) / 60 for time in timestamps]
 
+        max_height = 0.0
         for i in range(len(line_numbers)):
              plot_number = [j for j in range(len(n_lines_per_plot)) if i < line_numbers_by_plot[1:][j]] [0]
              line_number = line_numbers[i]
              line_heights = [self.identified_lines_dict[key][self.lines_in_dict_keyword][line_number][0] for key in self.identified_lines_dict.keys()]
+             max_height = np.max(line_heights + [max_height])
              #y_lims = [min([y_lims[0]] + line_heights), max([y_lims[1]] + line_heights) ]
              image_numbers = [key for key in self.identified_lines_dict.keys()]
              #single_lines[plot_number] = single_lines[plot_number] + [axarr[plot_number // 2, plot_number % 2].plot(image_numbers[1:], line_heights[1:])[0] ]
@@ -2011,7 +2548,164 @@ class SpectrumProcessor:
 
         for i in range(n_subplots):
              print ('Making subplot ' + str(i + 1) + ' of ' + str(n_subplots))
-             line_identifiers = ['L' + str(line_number) + ': ' + str(can.round_to_n(self.wavelength_of_mu_solution(self.identified_lines_dict[self.stacked_image_keyword][self.lines_in_dict_keyword][line_number][1]), 3)) + 'nm' for line_number in line_numbers[line_numbers_by_plot[i]:line_numbers_by_plot[i+1]] ]
+             line_identifiers = ['L' + str(line_number) + ': ' + str(can.round_to_n(self.wavelength_of_mu_solution(self.identified_lines_dict[self.stacked_image_keyword][self.lines_in_dict_keyword][line_number][1]), line_legend_n_sig_figs )) + 'nm' for line_number in line_numbers[line_numbers_by_plot[i]:line_numbers_by_plot[i+1]] ]
+             axarr[ i // 2, i % 2].legend(single_lines[i], line_identifiers, ncol = n_legend_col, prop={'size':legend_text_size} )
+             axarr[ i // 2, i % 2].set_ylim([-0.01 * max_height, max_height ])
+             if i // 2 == n_subplots // 2 -1 :
+                  axarr[ i // 2, i % 2].set_xlabel(xlabel )
+             if i % 2 == 0:
+                  axarr[ i // 2, i % 2].set_ylabel(ylabel )
+             axarr[ i // 2, i % 2 ].set_xticks
+        print ('Now saving plot... ')
+        plt.savefig(self.target_dir + line_variation_image_name )
+        plt.close('all')
+        return 1
+
+
+    def plotScaledLineProfilesInTime(self, n_cols = 4, fig_v_elem = 0.75, fig_h_elem = 2,
+                                     line_variation_image_name = 'skyLineChangesOverTimeScaled.pdf', line_variation_catalogue_name = 'skyLineChangesOverTime.lcat', cat_delimiter = ', ',
+                                     line_id_text_size = 8, xlabel = r'$\Delta t$ since first exp. (min)', ylabel ='Fitted height of line (ADU)' ,
+                                     line_box_buffer = 0.1, text_buffer_left = 0.03, text_top_buffer = 0.03, n_time_ticks = 5, n_std_to_show = 3,
+                                      cmap_buffer = 0.03, cmap_bottom = 0.05, cmap_width = 0.02, cmap_height = 0.9, cbar_label = 'Line height above continuum',
+                                      y_lims = [-0.05, 1.05], line_text_n_sig_figs = 4, line_legend_n_sig_figs = 4, labelsize = 10, title_size = 14, col_sep = 0.0,
+                                      plot_elem_to_cbar_width_ratio = 1, cmap_str = 'viridis', cmap_title = 'Height of line over continuum (ADU)', n_std_color_lims = 2.0, color_bound_n_sig_rounding = 3):
+        """
+        This function plots the normalized intensities of identified lines in
+           time.  This function should be run AFTER all images have been
+           reduced, as it relies on the existing library of line profiles that
+           have already been generated.
+        The resulting plot consists of a single of cells, one for each
+           identified line.  Each cell is normalized to show the entire line
+           (within 5\sigma of its own variations), and therefore the cells'
+           vertical scales should not be read in reference to each other.
+           The color scale indicates the lines' true height.
+        This function and the plotLineProfilesInTime function show the same
+           data, but in different ways.
+        """
+        cmap = cm.get_cmap(cmap_str, 12)
+        single_lines = [[] for i in range(n_cols)]
+        spectra_ids = list(self.identified_lines_dict.keys())
+        line_numbers = [key for key in self.identified_lines_dict[self.stacked_image_keyword][self.lines_in_dict_keyword] ]
+        #line_numbers = line_numbers[0:20]
+        line_identifiers = ['L' + str(int(line_number) + 1) + ': ' + str(can.round_to_n(self.wavelength_of_mu_solution(self.identified_lines_dict[self.stacked_image_keyword][self.lines_in_dict_keyword][line_number][1]), line_legend_n_sig_figs )) + 'nm' for line_number in line_numbers ]
+        print ('line_identifiers = ' + str(line_identifiers))
+        print ('line_numbers = ' + str(line_numbers))
+        print ('len(line_numbers) = ' + str(len(line_numbers)))
+
+        n_lines_per_col = int(np.ceil(len(line_numbers) / n_cols))
+        n_lines_per_col = [n_lines_per_col + (1 if (len(line_numbers) % n_lines_per_col - i) > 0 else 0)  for i in range(n_cols)]
+        max_n_lines_per_col = max(n_lines_per_col)
+        line_numbers_by_col = [0] + [np.sum(n_lines_per_col[0:i]) for i in range(1, n_cols)]  + [len(line_numbers)]
+        n_extra_lines = len(line_numbers) % n_cols
+        timestamps = [can.convertDateTimeStrToSeconds(self.identified_lines_dict[spectrum_id][self.obs_time_keyword], self.date_format_str) for spectrum_id in spectra_ids]
+        min_time = np.min(timestamps)
+        delta_ts = [(time - min_time) / 60 for time in timestamps]
+        max_delta_t = np.max(delta_ts)
+
+        line_table_to_save = [timestamps]
+
+        f, axarr = plt.subplots(max_n_lines_per_col, n_cols, figsize = (fig_h_elem * n_cols, (fig_v_elem * max_n_lines_per_col + fig_v_elem / plot_elem_to_cbar_width_ratio) * (1 + cmap_buffer * 2) ), squeeze = False )
+        #f = plt.figure(constrained_layout=True, figsize = (fig_h_elem * n_cols +  fig_h_elem / plot_elem_to_cbar_width_ratio, fig_v_elem * max_n_lines_per_col))
+        #gs = gridspec.GridSpec(ncols=n_cols * plot_elem_to_cbar_width_ratio, nrows=max_n_lines_per_col, figure=f)
+        plt.subplots_adjust(wspace=col_sep, hspace=0)
+        all_line_heights = [[self.identified_lines_dict[key][self.lines_in_dict_keyword][line_number][0] for key in self.identified_lines_dict.keys()] for line_number in line_numbers]
+        all_line_min, all_line_max, all_line_mean, all_line_std = [np.min(all_line_heights), np.max(all_line_heights), np.mean(all_line_heights), np.std(all_line_heights)]
+        line_color_min, line_color_max = [max(all_line_mean - n_std_color_lims * all_line_std, 0.0), all_line_mean + n_std_color_lims * all_line_std]
+        line_color_scaling_funct = lambda line_heights: (line_heights  - line_color_min) / (line_color_max - line_color_min)
+        yticks_set = [[] for i in range(n_cols)]
+        yticklabels_set = [[] for i in range(n_cols)]
+
+        all_axes = [[] for i in range(n_cols)]
+        print ('[n_cols, max_n_lines_per_col] = ' + str([n_cols, max_n_lines_per_col] ))
+        for i in range(n_cols):
+            for j in range(max_n_lines_per_col):
+                axarr[j, i].set_yticks([])
+                axarr[j, i].set_xticks([])
+                #if j >= n_lines_per_col[i] and j < max_n_lines_per_col - 1:
+                #    print ('For [j, i] = ' + str([j, i] ) + ', we should be removing xticks... ')
+                #    axarr[j, i].plot([0,1,2], [0,1,2])
+
+        for i in range(len(line_numbers)):
+             plot_number = [j for j in range(len(n_lines_per_col)) if i < line_numbers_by_col[1:][j]] [0]
+             col_num = i // max_n_lines_per_col
+             artificial_row_num = i % max_n_lines_per_col
+             #print ('[plot_elem_to_cbar_width_ratio * col_num, plot_elem_to_cbar_width_ratio * (col_num + 1)] = ' + str([plot_elem_to_cbar_width_ratio * col_num, plot_elem_to_cbar_width_ratio * (col_num + 1)] ))
+             print ('[artificial_row_num, col_num] = ' + str([artificial_row_num, col_num]))
+             ax = axarr[artificial_row_num, col_num]
+             #ax = f.add_subplot(gs[artificial_row_num, plot_elem_to_cbar_width_ratio * col_num:plot_elem_to_cbar_width_ratio * (col_num + 1)])
+             all_axes[col_num] = all_axes[col_num] + [ax]
+             line_number = line_numbers[i]
+             line_heights = np.array(all_line_heights[i] )
+             line_heights = line_heights
+             line_table_to_save = line_table_to_save + [line_heights]
+             line_median, line_std = [np.median(line_heights), np.std(line_heights)]
+             #line_heights = [self.identified_lines_dict[key][self.lines_in_dict_keyword][line_number][0] for key in self.identified_lines_dict.keys()]
+             line_min, line_max = [0.0, line_median + n_std_to_show * line_std]
+             #line_box_bounds = [artificial_row_num / max_n_lines_per_col, (artificial_row_num + 1) / max_n_lines_per_col - line_box_buffer / max_n_lines_per_col ]
+             line_box_bounds = [0.0, (1.0 - line_box_buffer - text_top_buffer)]
+             #yticks_set[plot_number] = yticks_set[plot_number] + [(line_box_bounds[1] + line_box_bounds[0]) / 2.0]
+             #yticklabels_set[plot_number] = yticklabels_set[plot_number] + [line_identifiers[i]]
+             on_plot_text = ax.text((delta_ts[-1] - delta_ts[0]) * text_buffer_left, 1 - text_top_buffer, line_identifiers[i], fontsize = labelsize, verticalalignment = 'top' )
+             scaled_line_heights = np.array([line_box_bounds[0] + (line_box_bounds[1] - line_box_bounds[0]) * (height - line_min) / (line_max - line_min) for height in line_heights ])
+             line_segment_middles = np.array([(line_heights[i] + line_heights[i+1]) / 2.0 for i in range(1, len(line_heights) - 1)])
+             line_color_coefs = line_color_scaling_funct(line_segment_middles)
+             xs, ys = delta_ts[1:], scaled_line_heights[1:]
+             points = np.array([xs, ys]).T.reshape(-1, 1, 2)
+             segments = np.concatenate([points[:-1], points[1:]], axis=1)
+             colors = cmap(line_color_coefs)
+             colors = [tuple(color_elem) for color_elem in colors]
+
+             lc = LineCollection(segments, colors = colors)
+             lc.set_linewidth(0.5)
+             #y_lims = [min([y_lims[0]] + line_heights), max([y_lims[1]] + line_heights) ]
+             image_numbers = [key for key in self.identified_lines_dict.keys()]
+             #single_lines[plot_number] = single_lines[plot_number] + [axarr[plot_number // 2, plot_number % 2].plot(image_numbers[1:], line_heights[1:])[0] ]
+             #single_lines[plot_number] = single_lines[plot_number] + [ax.plot(delta_ts[1:], scaled_line_heights[1:], c=cm.hot(line_heights), edgecolor='none')[0] ]
+             #single_lines[plot_number] = single_lines[plot_number] + [ax.plot(delta_ts[1:], scaled_line_heights[1:], c=cm.hot(line_heights) )[0] ]
+             #single_lines[plot_number] = single_lines[plot_number] + [ax.scatter(delta_ts[1:], scaled_line_heights[1:], c=colors, marker = '.' ) ]
+             single_lines[plot_number] = single_lines[plot_number] + [ax.add_collection(lc) ]
+             #ax.set_yticks([])
+             ax.set_xlim(0.0, max_delta_t)
+             ax.set_xticks([])
+             ax.set_ylim([0.0, 1.0])
+        for i in range(n_cols):
+            col_num = i
+            ax = axarr[-1, col_num]
+            ax.set_xlabel(r'$\Delta t$ (min)', fontsize = labelsize )
+            xticks = [int(elem) for elem in np.linspace(0.0, max_delta_t, n_time_ticks + 1)][1:-1]
+            ax.set_xticks(xticks)
+            ax.set_xticklabels(xticks, fontsize = labelsize)
+            #ax.set_yticks([])
+            #yticks = yticks_set[i]
+            #yticklabels = yticklabels_set[i]
+            #ax.set_yticks(yticks)
+            #ax.set_yticklabels(yticklabels, fontsize = labelsize, rotation = 90, verticalalignment = 'center')
+        #dummy_scat = ax.scatter([0.0, max_delta_t], [0.0, 1.0], color = cmap([0.0, 1.0]), alpha = 1.0 )
+
+        #cbar_ax = gs[0, -1]
+        #ax1 = plt.subplot2grid(gridsize, (0, 0), colspan=2, rowspan=2)
+        #plt.tight_layout()
+        f.subplots_adjust(top = 1 - 1 / (max_n_lines_per_col * plot_elem_to_cbar_width_ratio + 1) - cmap_buffer )
+        cbar_ax = f.add_axes([0.15, 1 - 1 / (max_n_lines_per_col * plot_elem_to_cbar_width_ratio + 1) + cmap_buffer, 0.7, 0.03 ])
+        cbar = f.colorbar(cm.ScalarMappable(cmap=cmap), cax = cbar_ax, shrink=0.95, aspect = 40, orientation = 'horizontal')
+        cbar.set_ticks(np.arange(0, 1.1, 0.5))
+        cbar.set_label(cbar_label, fontsize = title_size)
+        print ('[line_color_min, line_color_max ] = ' + str([line_color_min, line_color_max ] ))
+        cbar.ax.tick_params(labelsize=labelsize)
+        cbar.set_ticklabels([r'$>$' + str(can.round_to_n(line_color_min, color_bound_n_sig_rounding )) + r' Ry nm$^{-1}$', str(can.round_to_n((line_color_max + line_color_min) / 2.0, color_bound_n_sig_rounding )) + r' Ry nm$^{-1}$' , r'$<$' + str(can.round_to_n(line_color_max, color_bound_n_sig_rounding )) + r' Ry nm$^{-1}$'] )
+        print ('Saving plot of line intensities in time ... ')
+        #plt.tight_layout()
+        plt.savefig(self.target_dir + line_variation_image_name )
+        plt.close('all')
+        #plt.show()
+
+        header = cat_delimiter.join(['Obs time (s)'] + line_identifiers)
+        can.saveListsToColumns(line_table_to_save, line_variation_catalogue_name, self.target_dir, header = header, sep = cat_delimiter)
+        """
+
+        for i in range(n_subplots):
+             print ('Making subplot ' + str(i + 1) + ' of ' + str(n_subplots))
+             line_identifiers = ['L' + str(line_number) + ': ' + str(can.round_to_n(self.wavelength_of_mu_solution(self.identified_lines_dict[self.stacked_image_keyword][self.lines_in_dict_keyword][line_number][1]), line_legend_n_sig_figs )) + 'nm' for line_number in line_numbers[line_numbers_by_plot[i]:line_numbers_by_plot[i+1]] ]
              axarr[ i // 2, i % 2].legend(single_lines[i], line_identifiers, ncol = n_legend_col, prop={'size':legend_text_size} )
              axarr[ i // 2, i % 2].set_ylim([*y_lims])
              if i // 2 == n_subplots // 2 -1 :
@@ -2021,40 +2715,103 @@ class SpectrumProcessor:
              axarr[ i // 2, i % 2 ].set_xticks
         print ('Now saving plot... ')
         plt.savefig(self.target_dir + line_variation_image_name )
+        plt.close('all')
+        """
         return 1
 
 
-    def plotFullLineImage(self, parallel_spec_wavelengths, no_background_sub_full_pix_spectrum, full_pix_background_stats, continuum_interp, full_pix_spectrum,
-                                identified_full_emission_line_centers, full_emission_heights, continuum_fit_points, wavelength_of_mu_solution,
-                                show_fits, save_final_plot, xlabel = 'Sky wavelength (nm)', ylabel = 'Strength of line (ADU)', plot_title = None, xticks = np.arange(400, 1301, 100),
-                                xlims = None, ylims = None, save_image_name = 'NO_NAME_SAVED_FIGURE_OF_OSELOTS_LINES.txt', legend_pos = [[0.1, 0.75], 'center left']):
-
+    def plotFullLineImage(self, parallel_spec_wavelengths, full_pix_spectrum, spectrum_statistics_slice,
+                                full_emission_line_centers, full_emission_heights, full_emission_floors, wavelength_of_mu_solution,
+                                show_fits, save_final_plot,
+                                xlabel = 'Sky wavelength (nm)', spec_ylabel = r'Radiance (Ry nm$^{-1}$)', noise_ylabel = 'Noise ' + r'(Ry nm$^{-1}$)', plot_title = None, xticks = np.arange(400, 1301, 100),
+                                xlims = None, ylims = None, save_image_name = 'NO_NAME_SAVED_FIGURE_OF_OSELOTS_LINES.txt', legend_pos = [[0.1, 0.75], 'center left'],
+                                noise_bin_width = 10.0, labelsize = 14 ):
+        """
+        Saves a plot of the measured spectrum, in true sky units (Rayleigh/nm
+            vs wavelength) and the identified sky lines.  This command requires
+            that all of the data to be plotted (spectrum, lines) be passed as
+            arguments.
+        """
         if ylims == None:
-            ylims = self.ylims
+            ref_val = np.max(full_pix_spectrum[self.spec_range[0]:self.spec_range[1]])
+            spec_ylims = [-0.05 * ref_val, 1.05 * ref_val]
+            noise_ylims = spec_ylims
+        if xlims == None:
+            xlims = self.wavelength_target_range
+        #fig, axarr = plt.subplots(2,1, figsize = [self.default_figsize[0], self.default_figsize[1] / 2])
+        fig = plt.figure(figsize = [self.default_figsize[0], self.default_figsize[1] / 2])
+        gs = fig.add_gridspec(5, 1)
+        gs.update(hspace = 0.0)
+        noise_ax = fig.add_subplot(gs[0, 0])
+        spec_ax = fig.add_subplot(gs[1:, 0])
+
+        processed_spec = spec_ax.plot(parallel_spec_wavelengths, full_pix_spectrum, c = 'k', zorder = 2)[0]
+        spectrum_noise = [np.std(spectrum_statistics_slice[max(i - int(noise_bin_width / 2), 0):min(i + int(noise_bin_width / 2 + 0.5), len(spectrum_statistics_slice))]) for i in range(len(spectrum_statistics_slice)) ]
+        processed_noise = noise_ax.plot(parallel_spec_wavelengths, spectrum_noise, c = 'r', zorder = 2)[0]
+        identified_lines = spec_ax.scatter([wavelength_of_mu_solution(center) for center in full_emission_line_centers], np.array(full_emission_heights) + np.array(full_emission_floors), marker = 'x', c = 'orange', zorder = 3)
+        identified_line_centers = [spec_ax.axvline(wavelength_of_mu_solution(center), linestyle = '--', color = 'orange', linewidth = 0.75) for center in full_emission_line_centers]
+        orig_line_centers = [spec_ax.axvline(wavelength_of_mu_solution(center), linestyle = '--', color = 'cyan', linewidth = 0.75) for center in self.identified_full_emission_line_centers]
+        spec_ax.set_xlabel(xlabel, fontsize = labelsize)
+        spec_ax.set_ylabel(spec_ylabel, fontsize = labelsize)
+        noise_ax.set_ylabel(noise_ylabel, fontsize = labelsize)
+        #plt.suptitle(plot_title)
+        spec_ax.legend([processed_spec, processed_noise, identified_lines ], ['Continuum-subtracted sky spectrum', 'Spectrum root variance', 'Identified sky lines'], bbox_to_anchor=legend_pos[0], loc = legend_pos[1], )
+        noise_ax.set_xticks(xticks)
+        noise_ax.set_xticklabels([])
+        spec_ax.tick_params(axis="x",direction="in")
+        spec_ax.set_xticks(xticks)
+        spec_ax.set_xticklabels(xticks, fontsize = labelsize )
+        #plt.tight_layout()
+        spec_ax.set_ylim(*spec_ylims)
+        noise_ax.set_ylim(*noise_ylims)
+        spec_ax.set_xlim(*xlims)
+        noise_ax.set_xlim(*xlims)
+        if save_final_plot:
+            print ('Saving processed sky spectrum to figure named ' + save_image_name + '!')
+            plt.savefig(self.target_dir + save_image_name )
+            if not (show_fits):
+                plt.close('all')
+        if show_fits:
+            plt.show()
+        plt.close('all')
+        return 1
+
+    def plotFullAnalysisStepImage(self, parallel_spec_wavelengths, no_background_sub_full_pix_spectrum, full_pix_background_stats, continuum_interp, full_pix_spectrum,
+                                full_emission_line_centers, full_emission_heights, full_emission_floors, continuum_fit_points, wavelength_of_mu_solution,
+                                show_fits, save_final_plot, xlabel = 'Sky wavelength (nm)', ylabel = 'Relative intensity (normalized)', plot_title = None, xticks = np.arange(400, 1301, 100),
+                                xlims = None, ylims = None, save_image_name = 'NO_NAME_SAVED_FIGURE_OF_OSELOTS_LINES.txt', legend_pos = [[0.1, 0.75], 'center left']):
+        """
+        Saves a plot of the measured spectrum, in true sky units (Rayleigh/nm
+            vs wavelength) and the identified sky lines.  This command requires
+            that all of the data to be plotted (spectrum, lines) be passed as
+            arguments.
+        """
+        if ylims == None:
+            ylims = self.norm_ylims
         if xlims == None:
             xlims = self.wavelength_target_range
         fig = plt.figure(figsize = [self.default_figsize[0], self.default_figsize[1] / 2])
-        full_spec = plt.plot(parallel_spec_wavelengths, no_background_sub_full_pix_spectrum, c = 'blue', zorder = -1)[0]
+        norm_val = np.max(no_background_sub_full_pix_spectrum[self.spec_range[0]:self.spec_range[1]])
+        full_spec = plt.plot(parallel_spec_wavelengths, np.array(no_background_sub_full_pix_spectrum) / norm_val, c = 'blue', zorder = -1)[0]
         #background_spec = plt.plot(parallel_spec_wavelengths, full_pix_background_stats, c = 'red', zorder = -2)[0]
-        pre_throughput_spec = plt.plot(parallel_spec_wavelengths, no_background_sub_full_pix_spectrum * self.throughput_interp(parallel_spec_wavelengths) / np.max(no_background_sub_full_pix_spectrum * self.throughput_interp(parallel_spec_wavelengths) ), c = 'purple', zorder = -2)[0]
-        continuum_estimate = plt.plot(parallel_spec_wavelengths, continuum_interp(parallel_spec_wavelengths), c = 'k', zorder = 0, linestyle = '--')[0]
-        background_sub_spec = plt.plot(parallel_spec_wavelengths, full_pix_spectrum, c = 'green', zorder = 2)[0]
-        identified_lines = plt.scatter([wavelength_of_mu_solution(center) for center in identified_full_emission_line_centers], full_emission_heights, marker = 'x', c = 'orange', zorder = 3)
-        continuum_sampling_points = plt.scatter(continuum_fit_points[0], continuum_fit_points[1], marker = 'o', color = 'k', zorder = 1)
-        identified_line_centers = [plt.axvline(wavelength_of_mu_solution(center), linestyle = '--', color = 'orange', linewidth = 0.75) for center in identified_full_emission_line_centers]
+        pre_throughput_spec = plt.plot(parallel_spec_wavelengths, no_background_sub_full_pix_spectrum * self.throughput_interp(parallel_spec_wavelengths) / norm_val, c = 'purple', zorder = -2)[0]
+        continuum_estimate = plt.plot(parallel_spec_wavelengths, continuum_interp(parallel_spec_wavelengths) / norm_val, c = 'green', zorder = 0, linestyle = '--')[0]
+        background_sub_spec = plt.plot(parallel_spec_wavelengths, full_pix_spectrum / norm_val, c = 'k', zorder = 2)[0]
+        identified_lines = plt.scatter([wavelength_of_mu_solution(center) for center in full_emission_line_centers], (np.array(full_emission_heights) + np.array(full_emission_floors)) / norm_val, marker = 'x', c = 'orange', zorder = 3)
+        continuum_sampling_points = plt.scatter(continuum_fit_points[0], np.array(continuum_fit_points[1]) / norm_val, marker = 'o', color = 'green', zorder = 1)
+        identified_line_centers = [plt.axvline(wavelength_of_mu_solution(center), linestyle = '--', color = 'orange', linewidth = 0.75) for center in full_emission_line_centers]
         orig_line_centers = [plt.axvline(wavelength_of_mu_solution(center), linestyle = '--', color = 'cyan', linewidth = 0.75) for center in self.identified_full_emission_line_centers]
-        throughput = plt.plot(parallel_spec_wavelengths, self.throughput_interp(parallel_spec_wavelengths), c = 'purple', zorder = -4, alpha = 0.5 )[0]
-        plt.plot(xlims, [0.0, 0.0], c = 'k', alpha = 0.5, zorder = -5)
-        for i in range(len(full_emission_heights)):
-            plt.text(self.wavelength_of_mu_solution(identified_full_emission_line_centers[i]), -500 + (i % 3) * 100, str(i), color = 'k', zorder = 4, fontsize = 8, horizontalalignment = 'center', )
+        throughput = plt.plot(parallel_spec_wavelengths, self.throughput_interp(parallel_spec_wavelengths), c = 'red', zorder = -4, alpha = 1.0, linestyle = '--' )[0]
+        #for i in range(len(full_emission_heights)):
+        #    plt.text(self.wavelength_of_mu_solution(full_emission_line_centers[i]), -500 + (i % 3) * 100, str(i), color = 'k', zorder = 4, fontsize = 8, horizontalalignment = 'center', )
         plt.xlabel(xlabel)
         plt.ylabel(ylabel)
         print ('plot_title = ' + str(plot_title))
         plt.title(plot_title)
-        plt.legend([identified_lines, full_spec, pre_throughput_spec, continuum_estimate, continuum_sampling_points, background_sub_spec, throughput], ['Identified lines', 'Full spectrum', 'Spectrum before throughput', 'Continuum estimate', 'Continuum interpolation points', 'Spec - background', 'Throughput'],bbox_to_anchor=legend_pos[0], loc = legend_pos[1], )
+        plt.legend([pre_throughput_spec, throughput, full_spec, continuum_estimate, continuum_sampling_points, background_sub_spec, identified_lines], ['Spectrum before throughput', 'Throughput', 'Sky spectrum', 'Continuum estimate', 'Continuum interpolation points', 'Continuum-subtracted sky spectrum', 'Identified sky lines'], bbox_to_anchor=legend_pos[0], loc = legend_pos[1], )
         #plt.scatter(ref_line_wavelengths, ref_line_heights , marker = 'x')
         plt.xticks(xticks)
-        plt.tight_layout()
+        #plt.tight_layout()
         plt.ylim(*ylims)
         plt.xlim(*xlims)
         if save_final_plot:
@@ -2067,15 +2824,30 @@ class SpectrumProcessor:
         plt.close('all')
         return 1
 
-
-    def pullCombinedSpectrumFromImages(self, spec_images_to_stack, show_fits = None, analyze_spec_of_ind_images = 1, line_dict_id = None, plot_title = 'Stacked Spectrum'):
+    def pullCombinedSpectrumFromImages(self, spec_images_to_stack, show_fits = None, analyze_spec_of_ind_images = 1, line_dict_id = None, plot_title = 'Stacked Spectrum', save_intermediate_images = 0, stacked_image_name = None, apply_background_correction = 1, apply_scatter_correction = 0):
+        """
+        This function pulls the 1d spectrum from the average of the provided list
+            of images.  This combined spectrum is useful for identifying lines,
+            particularly faint lines, in the source file that aren't as easily
+            identified in individual images.
+        The standard reduction pipeline uses these combined images to identify all
+            lines that are then looked for in the individual images.  These lines
+            are then looked for in the individual images.  It's easier to detect
+            these faint lines in individual images if we know where to look first.
+        The lines identified in this combined spectrum are also the lines whose
+            intensities are traced out in time and plotted by the
+            plotScaledLineProfilesInTime functions.
+        """
         if show_fits != None:
             self.show_fits = show_fits
         if self.wavelength_of_mu_solution == None:
             self.getWavelengthSolution()
+        if stacked_image_name == None:
+            stacked_image_name = self.stacked_image_name
         if line_dict_id == None:
             line_dict_id = self.stacked_image_line_dict_id
-        self.parallel_spec_pixels, self.full_pix_spectrum, self.full_pix_background_stats, self.stacked_header = self.reduceImagesTo1dSpectrum(spec_images_to_stack, self.n_std_for_strong_line, save_image_name = self.stacked_image_name + self.data_image_suffix)
+        #print ('self.n_std_for_strong_line = ' + str(self.n_std_for_strong_line))
+        self.parallel_spec_pixels, self.full_pix_spectrum, self.full_pix_background_stats, self.stacked_header = self.reduceImagesTo1dSpectrum(spec_images_to_stack, self.n_std_for_strong_line, save_image_name = self.stacked_image_name + self.data_image_suffix, save_intermediate_images = save_intermediate_images, determine_new_line_curvature = 1, apply_background_correction = background_correct, apply_scatter_correction = scatter_correct)
 
         print ('self.parallel_spec_pixels = ' + str(self.parallel_spec_pixels))
         self.parallel_spec_wavelengths = [self.wavelength_of_mu_solution(pix) for pix in self.parallel_spec_pixels]
@@ -2086,42 +2858,27 @@ class SpectrumProcessor:
         self.continuum = self.continuum_interp(self.parallel_spec_wavelengths)
         full_wavelengths = [self.wavelength_of_mu_solution(pix) for pix in self.parallel_spec_pixels]
 
-        #self.strong_absorbtion_crossings, self.strong_emission_crossings = self.detectLinesCentersInOneD(self.full_pix_spectrum, self.full_pix_background_stats, spec_grad_rounding = 5, n_std_for_line = self.n_std_for_strong_line, show = self.show_fits)
-        #self.strong_emission_fits = self.identifyLinesOnSlice(range(len(self.full_pix_spectrum )), self.full_pix_spectrum,
-        #                         peak_guesses = self.strong_emission_crossings, std_thresh = 3, max_line_fit_width = 20,
-        #                         n_pix_above_thresh = 1, init_fit_width_guess = 2.0, background_bin_width = 10,
-        #                         search_width = 3.0, show_spec = self.show_fits, verbose = 1,
-        #                         fit_lines_with_pedestal = 0, fit_line_width_with_seeing_funct = 0)
-        #print ('self.strong_emission_fits = ' + str(self.strong_emission_fits))
-        #strong_emission_line_centers = [fit[1] for fit in self.strong_emission_fits]
-        #strong_emission_pixels_vs_widths = [[fit[1], fit[2]] for fit in self.strong_emission_fits]
-        #print('self.full_emission_pixels_vs_widths = ' + str(self.full_emission_pixels_vs_widths))
-        #self.seeing_fit_funct = np.poly1d(can.polyFitNSigClipping( [emit[0] for emit in strong_emission_pixels_vs_widths], [emit[1] for emit in strong_emission_pixels_vs_widths], 2, self.sig_clip_for_line_width) [3])
+        pix_target_range = [max(int(self.mu_of_wavelength_solution(self.wavelength_target_range[0])), 0), min(int(self.mu_of_wavelength_solution(self.wavelength_target_range[1])), self.max_dimension) ]
+        self.full_absorbtion_crossings, self.full_emission_crossings = self.detectLinesCentersInOneD(self.parallel_spec_pixels[pix_target_range[0]:pix_target_range[1]], self.full_pix_spectrum[pix_target_range[0]:pix_target_range[1]], self.full_pix_background_stats[pix_target_range[0]:pix_target_range[1]], spec_grad_rounding = 5, n_std_for_line = self.n_std_for_full_line, show = self.show_fits, background_bin_width = self.pix_bin_to_meas_background_noise )
 
-        pix_target_range = [int(self.mu_of_wavelength_solution(self.wavelength_target_range[0])), int(self.mu_of_wavelength_solution(self.wavelength_target_range[1]))]
-        self.full_absorbtion_crossings, self.full_emission_crossings = self.detectLinesCentersInOneD(self.parallel_spec_pixels[pix_target_range[0]:pix_target_range[1]], self.full_pix_spectrum[pix_target_range[0]:pix_target_range[1]], self.full_pix_background_stats[pix_target_range[0]:pix_target_range[1]], spec_grad_rounding = 5, n_std_for_line = self.n_std_for_full_line, show = self.show_fits)
-        #print ('[self.full_absorbtion_crossings, self.full_emission_crossings] = ' + str([self.full_absorbtion_crossings, self.full_emission_crossings]))
-
-        #self.full_absorbtion_crossings = [cross + pix_target_range[0] for cross in self.full_absorbtion_crossings]
-        #self.full_emission_crossings = [cross + pix_target_range[0] for cross in self.full_emission_crossings]
-        print('self.full_emission_crossings = ' + str(self.full_emission_crossings))
         self.full_emission_fits = self.identifyLinesOnSlice(self.parallel_spec_pixels[pix_target_range[0]:pix_target_range[1]], self.full_pix_spectrum[pix_target_range[0]:pix_target_range[1]],
-                                 max_line_fit_width = self.width_pix_sample_to_fit_line, peak_guesses = self.full_emission_crossings, show_spec = self.show_fits, verbose = 1,
-                                 fit_lines_with_pedestal = 0, fit_line_width_with_seeing_funct = 1)
+                                 max_line_fit_width = self.width_pix_sample_to_fit_line, peak_guesses = self.full_emission_crossings, show_spec = self.show_fits, verbose = 0,
+                                 fit_lines_with_pedestal = 0, fit_line_width_with_seeing_funct = 1, background_bin_width = self.background_bin_width_for_line_id_in_slice)
         full_emission_centroids = [fit[1] for fit in self.full_emission_fits ]
         self.seeing_fit_params = self.simulFitLineWidths(np.array(self.parallel_spec_pixels) , self.full_pix_spectrum, self.full_emission_fits)
-        print('self.seeing_fit_params = ' + str(self.seeing_fit_params ))
-        print ('full_emission_centroids = ' + str(full_emission_centroids))
+
         self.seeing_fit_funct = np.poly1d(self.seeing_fit_params)
         #print ('self.seeing_fit_funct = ' + str(self.seeing_fit_funct))
 
         self.full_emission_fits = self.identifyLinesOnSlice(range(len(self.parallel_spec_pixels)), self.full_pix_spectrum,
-                                 max_line_fit_width = self.refined_width_pix_sample_to_fit_line, peak_guesses = full_emission_centroids, show_spec = self.show_fits, verbose = 1,
-                                 fit_lines_with_pedestal = 0, fit_line_width_with_seeing_funct = 1)
-        self.full_emission_fits = [fit for fit in self.full_emission_fits if fit[1] > self.parallel_spec_pixels[1] and fit[1] < self.parallel_spec_pixels[-2] ]
+                                 max_line_fit_width = self.refined_width_pix_sample_to_fit_line, peak_guesses = full_emission_centroids, show_spec = self.show_fits, verbose = 0,
+                                 fit_lines_with_pedestal = 0, fit_line_width_with_seeing_funct = 1,   background_bin_width = self.background_bin_width_for_line_id_in_slice)
+        self.full_emission_fits = [fit for fit in self.full_emission_fits if (fit[1] > max(self.parallel_spec_pixels[1], self.mu_of_wavelength_solution(self.wavelength_target_range[0]))
+                                                                              and fit[1] < min(self.parallel_spec_pixels[-2], self.mu_of_wavelength_solution(self.wavelength_target_range[1])) )]
         #print ('self.full_emission_fits = ' + str(self.full_emission_fits))
         self.identified_full_emission_line_centers = [fit[1] for fit in self.full_emission_fits]
         full_emission_heights = [fit[0] for fit in self.full_emission_fits]
+        full_emission_floors = [fit[3] for fit in self.full_emission_fits]
         full_emission_pixels_vs_widths = [[fit[1], fit[2]] for fit in self.full_emission_fits]
         self.identified_lines_dict[self.stacked_image_keyword] = {}
         self.identified_lines_dict[self.stacked_image_keyword][self.lines_in_dict_keyword] = {i:self.full_emission_fits[i] for i in range(len(self.full_emission_fits))}
@@ -2129,14 +2886,22 @@ class SpectrumProcessor:
         #print('self.full_emission_pixels_vs_widths = ' + str(self.full_emission_pixels_vs_widths))
         #self.seeing_fit_funct = np.poly1d(can.polyFitNSigClipping( [emit[0] for emit in full_emission_pixels_vs_widths], [emit[1] for emit in full_emission_pixels_vs_widths], 2, self.sig_clip_for_line_width) [3])
         if self.show_fits or self.save_final_plot:
-            self.plotFullLineImage(self.parallel_spec_wavelengths[pix_target_range[0]:pix_target_range[1]], self.no_background_sub_full_pix_spectrum[pix_target_range[0]:pix_target_range[1]], self.full_pix_background_stats[pix_target_range[0]:pix_target_range[1]], self.continuum_interp, self.full_pix_spectrum[pix_target_range[0]:pix_target_range[1]],
-                                    self.identified_full_emission_line_centers, full_emission_heights, self.continuum_fit_points, self.wavelength_of_mu_solution,
+            self.plotFullAnalysisStepImage(self.parallel_spec_wavelengths[pix_target_range[0]:pix_target_range[1]], self.no_background_sub_full_pix_spectrum[pix_target_range[0]:pix_target_range[1]], self.full_pix_background_stats[pix_target_range[0]:pix_target_range[1]], self.continuum_interp, self.full_pix_spectrum[pix_target_range[0]:pix_target_range[1]],
+                                    self.identified_full_emission_line_centers, full_emission_heights, full_emission_floors, self.continuum_fit_points, self.wavelength_of_mu_solution,
                                     self.show_fits, self.save_final_plot, plot_title = plot_title,
-                                    save_image_name = self.stacked_image_name + self.processed_spectra_image_suffix + self.figure_suffix)
+                                    save_image_name = stacked_image_name  + self.processed_multistep_spectra_image_suffix + self.figure_suffix)
+
+            self.plotFullLineImage(self.parallel_spec_wavelengths[pix_target_range[0]:pix_target_range[1]], self.full_pix_spectrum[pix_target_range[0]:pix_target_range[1]], self.full_pix_background_stats[pix_target_range[0]:pix_target_range[1]],
+                                    self.identified_full_emission_line_centers, full_emission_heights, full_emission_floors, self.wavelength_of_mu_solution,
+                                    self.show_fits, self.save_final_plot, plot_title = plot_title, noise_bin_width = self.pix_bin_to_meas_background_noise,
+                                    save_image_name = stacked_image_name  + self.processed_spectra_image_suffix + self.figure_suffix)
         return 1
 
     def loadSpecProcessor(self, load_name, load_dir = None):
         """
+        This function loads a saved version of this class into python memory.  This is
+            very useful, as it prevents the user from having to reprocess a stack of
+            images when reexamining data.
         Note the order here is important, and needs to be kept consistent with the order
            in which things are written in the saveSpecProcessor function.
         """
@@ -2149,16 +2914,19 @@ class SpectrumProcessor:
         self.wavelength_of_mu_solution = None
         l_anchor_pix = load_object.readline().split(' ')[1:]
         l_anchor_pix = l_anchor_pix[-1][:-1]
-        self.anchor_parallel_pixel = float(l_anchor_pix[1])
+        self.anchor_parallel_pix = float(l_anchor_pix[1])
         l_spec_range = load_object.readline().split(' ')
         l_spec_range[-1] = l_spec_range[-1][:-1]
-        self.spec_range = [float(term) for term in l_spec_range[1:]]
+        self.spec_range = [int(term) for term in l_spec_range[1:]]
         l_parallel_spec_pixels = load_object.readline().split(' ')
         l_parallel_spec_pixels [-1] = l_parallel_spec_pixels [-1][0:-1]
         self.parallel_spec_pixels = [float(val) for val in l_parallel_spec_pixels[1:]]
         l_full_pix_spectrum = load_object.readline().split(' ')
         l_full_pix_spectrum[-1] = l_full_pix_spectrum[-1][0:-1]
         self.full_pix_spectrum = [float(val) for val in l_full_pix_spectrum[1:]]
+        l_no_background_sub_full_pix_spectrum = load_object.readline().split(' ')
+        l_no_background_sub_full_pix_spectrum[-1] = l_no_background_sub_full_pix_spectrum[-1][0:-1]
+        self.no_background_sub_full_pix_spectrum = [float(val) for val in l_no_background_sub_full_pix_spectrum[1:]]
         l_full_pix_background_stats = load_object.readline().split(' ')
         l_full_pix_background_stats[-1] = l_full_pix_background_stats[-1][0:-1]
         self.full_pix_background_stats = [float(val) for val in l_full_pix_background_stats[1:]]
@@ -2211,6 +2979,11 @@ class SpectrumProcessor:
         return 1
 
     def saveSpecProcessor(self, save_name, save_dir = None, ):
+        """
+        This function saves the current instance of this class into a loadable
+            python object file.  This is very useful, as it prevents the user
+            from having to reprocess a stack of images when reexamining data.
+        """
         if save_dir == None:
             save_dir = self.target_dir
         #What do we want to save? The wavelength solution, and the identified lines directory.
@@ -2224,6 +2997,8 @@ class SpectrumProcessor:
         save_object.write('parallel_spec_pixels' + ' ' + ' '.join([str(can.round_to_n(val, 5)) for val in self.parallel_spec_pixels]))
         save_object.write('\n')
         save_object.write( 'full_pix_spectrum' + ' '  + ' '.join([str(can.round_to_n(val, 5)) for val in self.full_pix_spectrum]) )
+        save_object.write('\n')
+        save_object.write( 'no_background_sub_full_pix_spectrum' + ' '  + ' '.join([str(can.round_to_n(val, 5)) for val in self.no_background_sub_full_pix_spectrum]) )
         save_object.write('\n')
         save_object.write( 'full_pix_background_stats' + ' ' + ' '.join([str(can.round_to_n(val, 5)) for val in self.full_pix_background_stats]))
         save_object.write('\n')
@@ -2258,10 +3033,18 @@ class SpectrumProcessor:
         return 1
 
     def initialize_params_from_ref_params(self):
-        self.master_bias_file = self.ref_param_holder.getMasterBiasName()
+        """
+        This function initializes a bunch of parameters that the processor
+           class uses in analyzing a night of data.  These parameters range
+           from the name of master bias and dark files to the number of
+           standard deviations needed to identify an emission line as
+           significant.
+        """
+        self.master_bias_image_file = self.ref_param_holder.getMasterBiasImageName()
+        self.master_bias_level_file = self.ref_param_holder.getMasterBiasLevelName()
         self.master_dark_file = self.ref_param_holder.getMasterDarkName()
         self.master_bias_list = self.ref_param_holder.getBiasList()
-        self.master_dark_file = self.ref_param_holder.getDarkList()
+        self.master_dark_list = self.ref_param_holder.getDarkList()
         self.ref_throughput_file = self.ref_param_holder.getRefThroughputFile()
         self.cosmic_prefix = self.ref_param_holder.getCosmicPrefix()
         self.background_buffer = self.ref_param_holder.getBackgroundBuffer()
@@ -2273,6 +3056,7 @@ class SpectrumProcessor:
         self.processed_file_suffix = self.ref_param_holder.getProcessedFileSuffix()
         self.figure_suffix = self.ref_param_holder.getFigureSuffix()
         self.processed_spectra_image_suffix = self.ref_param_holder.getProcessedSpectrumSuffix()
+        self.processed_multistep_spectra_image_suffix = self.ref_param_holder.getMultistepSpectrumSuffix()
         self.perp_spec_image_suffix = self.ref_param_holder.getOrthogonalBinOfSpectrumSuffix()
         self.n_std_for_strong_line = self.ref_param_holder.getNStdForStrongLines()
         self.n_std_for_full_ref_line = self.ref_param_holder.getNStdForFullRefLines()
@@ -2314,6 +3098,7 @@ class SpectrumProcessor:
         self.n_ignore_for_continuum_seeds = self.ref_param_holder.getNIgnoreContinuumSeedFile()
         self.min_line_vs_seed_sep = self.ref_param_holder.getMaxContinuumSeedLineSep()
         self.throughput_file = self.ref_param_holder.getThroughputFile()
+        self.abs_throughput_wavelength, self.abs_throughput_val = self.ref_param_holder.getAbsThroughputData()
         self.ref_sky_lines_file = self.ref_param_holder.getRefSkyLinesFile()
         self.ref_sky_lines_file_n_ignore = self.ref_param_holder.getNIgnoreRefSkyLinesFile()
         self.init_seeing_guess = self.ref_param_holder.getInitSeeing()
@@ -2328,6 +3113,7 @@ class SpectrumProcessor:
         self.stacked_image_line_dict_id  = self.ref_param_holder.getLineDictIDOfStackedImage()
         self.bg_sig_clip = self.ref_param_holder.getBackgroundSigClip()
         self.stacked_image_name = self.ref_param_holder.getStackedImageName()
+        self.final_spec_image_name = self.ref_param_holder.getStackedImageName()
         self.obs_time_keyword = self.ref_param_holder.getStartExposureKeyword()
         self.date_format_str = self.ref_param_holder.getDateFormatString()
         self.stacked_image_keyword = self.ref_param_holder.getStackedKeyword()
@@ -2336,6 +3122,13 @@ class SpectrumProcessor:
         self.energy_to_photon_scaling = self.ref_param_holder.getWavelengthToPhotonScaling()
         self.background_cut_wavelengths = self.ref_param_holder.getBackgroundCutWavelengths()
         self.bg_fit_range = self.ref_param_holder.getBackgroundFitRegion()
+        self.max_dimension = self.ref_param_holder.getImageDimensions()[self.spec_axis]
+        self.pix_bin_to_meas_background_noise = self.ref_param_holder.getBinningForBackgroundNoiseMeasurement()
+        self.std_thresh_for_scatter_correct = self.ref_param_holder.getStdThreshForScatterCorrecting()
+
+        self.fits_exp_time_keyword = self.ref_param_holder.getExpTimeKeyword()
+
+        self.wavelength_range = self.ref_param_holder.getWavelengthRangeOfInterest()
 
         self.throughput_interp = None
         self.mu_of_wavelength_solution = None
@@ -2352,14 +3145,22 @@ class SpectrumProcessor:
                  background_buffer = 10, background_size = 100, background_low = 1, n_std_for_strong_line = 20.0, n_std_for_full_line = 10.0,
                  archival_data_dir = '/Users/sashabrownsberger/Documents/Harvard/physics/stubbs/skySpectrograph/calibrationDataFiles/',
                  ref_params_file = 'OSELOTSDefaults.txt', ref_params_dir = '/Users/sashabrownsberger/Documents/sashas_python_scripts/skySpectrograph/',
-                 remove_intermed_images = 1):
+                 scatter_data_dir = '/Users/sashabrownsberger/Documents/Harvard/physics/stubbs/skySpectrograph/data/ut20211210/', scatter_data_key_file = 'scatter_map_Mono_2021_12_10.txt',
+                 remove_intermed_images = 1, stacked_image_name_root = None, date = None):
+
+        self.date = date
 
         self.ref_param_holder = ref_param.CommandHolder(spectrograph_file = ref_params_file, defaults_dir = ref_params_dir)
         self.initialize_params_from_ref_params()
+        if stacked_image_name_root != None:
+            self.stacked_image_name = stacked_image_name_root
         self.spec_archival_info = {'KR1':{'spec_file':'KR1LinesSpec.csv','n_spec_lines_to_ignore':1, 'lines_file':'KR1_lines_all.txt', 'n_lines_lines_to_ignore':1},
                               #'Gemini':{'spec_file':'GeminiSkyLines.txt','n_lines_to_ignore':14},
                              'Gemini':{'spec_file':'GeminiSkyBrightness.txt','n_lines_to_ignore':14},
-                              'throughput':{'spec_file':'OSELOT_throughput.txt','n_lines_to_ignore':0} }
+                              'throughput':{'spec_file':'OSELOT_throughput.txt','n_lines_to_ignore':1} }
+        self.scatter_data_dir = scatter_data_dir
+        self.scatter_data_key_file = scatter_data_key_file
+        self.scatter_image_file_name = self.scatter_data_key_file.split('.')[0] + '.fits'
         #data_image_suffix = self.ref_param_holder.getImageSuffix()
         #list_suffix = self.ref_param_holder.getImageSuffix()
         #master_bias_prefix = self.ref_param_holder.getMasterBiasPrefix()
@@ -2376,6 +3177,7 @@ class SpectrumProcessor:
         self.ref_sky_lines_data = can.readInColumnsToList(self.ref_sky_lines_file, self.archival_data_dir, n_ignore = self.ref_sky_lines_file_n_ignore, convert_to_float = 1)
         self.identified_lines_dict = {}
         self.xlims = [450, 1350]
+        self.norm_ylims = [-0.2, 1.2]
         self.ylims = [-0.2, 1.2]
         self.remove_intermed_images = remove_intermed_images
         self.throughput_interp = self.importSystemThroughput()
@@ -2388,3 +3190,75 @@ class SpectrumProcessor:
         self.seeing_fit_params = np.zeros(self.seeing_fit_order + 1)
         self.seeing_fit_params[-1] = self.init_seeing_guess
         self.seeing_fit_funct = np.poly1d(self.seeing_fit_params)
+        self.strong_line_2d_profile_fit = None
+
+if __name__ == "__main__":
+    date = ['2021', '12', '28']
+    f_pos = '26p35'
+    do_dark = 1
+    target_dir = '/Users/sashabrownsberger/Documents/Harvard/physics/stubbs/skySpectrograph/data/ut' + ''.join(date) + '/'
+    scatter_data_dir = '/Users/sashabrownsberger/Documents/Harvard/physics/stubbs/skySpectrograph/data/ut' + ''.join(date) + '/'
+    scatter_data_key_file = 'scatter_map_Mono_' + '_'.join(date) + '.txt'
+    print ('scatter_data_dir + scatter_data_key_file = ' + str(scatter_data_dir + scatter_data_key_file))
+    processor = SpectrumProcessor(target_dir, show_fits = 0, scatter_data_dir = scatter_data_dir, scatter_data_key_file = scatter_data_key_file, date = date, do_dark = do_dark)
+
+    cal_waves = [int(wave) for wave in np.arange(750, 938.1, 2)]
+    n_dark_imgs_per_wave = 1
+    n_bias_imgs_per_wave = 2
+    n_exp_imgs_per_wave = 5
+    start_bias_number = 36
+    KR1_nums = [15, 17, 19]
+    n_imgs_per_cycle = (n_dark_imgs_per_wave + n_bias_imgs_per_wave + n_exp_imgs_per_wave)
+    bias_nums = [KR1_nums[0] - 1] + [num + 1 for num in KR1_nums] + can.flattenListOfLists( [[[start_bias_number + j * (n_dark_imgs_per_wave + 1) + k * n_bias_imgs_per_wave // 2 + i * n_imgs_per_cycle for k in range(n_bias_imgs_per_wave // 2)] for j in range(n_dark_imgs_per_wave + 1)] for i in range(len(cal_waves))], fully_flatten = 1 )
+    print ('bias_nums = ' + str(bias_nums))
+    dark_nums = can.flattenListOfLists( [[start_bias_number + n_bias_imgs_per_wave // 2 + j + i * n_imgs_per_cycle for j in range(n_dark_imgs_per_wave)] for i in range(len(cal_waves) - 1)] )
+    print ('dark_nums = ' + str(dark_nums))
+    cal_nums = can.flattenListOfLists([[start_bias_number + n_bias_imgs_per_wave + n_dark_imgs_per_wave + n_imgs_per_cycle * i + j for j in range(n_exp_imgs_per_wave)] for i in range(-1, len(cal_waves)-1)])
+    print ('cal_nums = ' + str(cal_nums))
+    bias_imgs = ['Bias_' + '_'.join([str(elem) for elem in date]) + '_' + str(i) + '.fits' for i in bias_nums]
+    processor.plotBiasLevels(bias_list = 'BIAS.list')
+    #dark_nums = []
+    dark_imgs = ['NoLight_f' + f_pos + '_' + '_'.join([str(elem) for elem in date]) + '_' + str(i) + '.fits' for i in dark_nums]
+    can.saveListsToColumns(dark_imgs, 'DARK.list', target_dir)
+    scatter_correct = 1
+    background_correct = 0
+    determine_spec_sol = 1
+    bias_imgs = ['Bias_' + '_'.join([str(elem) for elem in date]) + '_' + str(i) + '.fits' for i in bias_nums]
+    can.saveListsToColumns(bias_imgs, 'BIAS.list', target_dir)
+    processor.plotBiasLevels(bias_list = 'BIAS.list')
+    KR1_imgs = ['KR1_f' + f_pos + '_' + '_'.join([str(elem) for elem in date]) + '_' + str(i) + '.fits' for i in KR1_nums]
+    can.saveListsToColumns(KR1_imgs, 'KR1.list', target_dir )
+    ref_spec_solution_file = 'OSELOTSWavelengthSolution.txt'
+    if determine_spec_sol:
+        processor.getWavelengthSolution(ref_spec_images_list = 'KR1.list', ref_spec_solution_file = ref_spec_solution_file, save_new_reference_spectrum = 1, ref_spec = None, show_fits = None)
+        #As a check, process the refernece wavelength images:
+        processor.pullCombinedSpectrumFromImages(KR1_imgs, show_fits = None, analyze_spec_of_ind_images = 1, line_dict_id = None, plot_title = 'Stacked KR1 Spectrum', save_intermediate_images = 0, stacked_image_name = 'StackedKR1Image_img' + str(KR1_nums[0]) + 'To' + str(KR1_nums[-1]), apply_background_correction = background_correct, apply_scatter_correction = 0)
+        for i in range(len(KR1_imgs)):
+            img = KR1_imgs[i]
+            img_num = KR1_nums[i]
+            processor.measureStrengthOfLinesInImage(img, show_fits = 0, line_dict_id = img_num, redetermine_spec_range = 0)
+
+    #Now we should reinitiate the processor so that we don't try to match reference and sky lines
+    processor = SpectrumProcessor(target_dir, show_fits = 0, scatter_data_dir = scatter_data_dir, scatter_data_key_file = scatter_data_key_file, date = date)
+    dark_sky_nums = KR1_nums
+    all_sky_nums = KR1_nums
+    dark_sky_imgs = ['KR1_f' + f_pos + '_' + '_'.join([str(elem) for elem in date]) + '_' + str(i) + '.fits' for i in dark_sky_nums]
+    all_sky_imgs = ['KR1_f' + f_pos + '_' + '_'.join([str(elem) for elem in date]) + '_' + str(i) + '.fits' for i in all_sky_nums]
+
+    #all_sky_nums = [161, 162, 163]
+    #dark_sky_imgs = [ 'Mono_' + str(800) + 'nm_f' + focus_str + '_' + '_'.join(date) + '_' + str(j) + '.fits' for j in all_sky_nums]
+    #all_sky_imgs = [ 'Mono_' + str(800) + 'nm_f' + focus_str + '_' + '_'.join(date) + '_' + str(j) + '.fits' for j in all_sky_nums ]
+    processor.pullCombinedSpectrumFromImages(dark_sky_imgs, show_fits = None, analyze_spec_of_ind_images = 1, line_dict_id = None, plot_title = 'Stacked Spectrum', save_intermediate_images = 0, stacked_image_name = 'StackedSkyImage_img' + str(dark_sky_nums[0]) + 'To' + str(dark_sky_nums[-1]), apply_scatter_correction = scatter_correct)
+    for i in range(len(all_sky_imgs)):
+        img = all_sky_imgs[i]
+        img_num = all_sky_nums[i]
+        processor.measureStrengthOfLinesInImage(img, show_fits = 0, line_dict_id = img_num, redetermine_spec_range = 0)
+    processor.plotScaledLineProfilesInTime()
+    processor.plotLineProfilesInTime()
+    processor_python_obj_save_file = 'FullNight_ut' + ''.join(date) + '.prsc'
+    processor.saveSpecProcessor(processor_python_obj_save_file, save_dir = None, )
+    print ('You can reload the saved spectrum processor using the following (in the Python environment): ')
+    print ('import ProcessRawSpectrumClass as prsc')
+    print ("target_dir = '/Users/sashabrownsberger/Documents/Harvard/physics/stubbs/skySpectrograph/data/ut'" + ''.join(date) + " + '/' " )
+    print ('processor_reloaded = prsc.SpectrumProcessor(target_dir, show_fits = 0)')
+    print ("processor_reloaded.loadSpecProcessor(processor_python_obj_save_file, load_dir = None)")

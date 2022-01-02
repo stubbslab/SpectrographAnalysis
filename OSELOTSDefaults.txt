@@ -1,5 +1,6 @@
 #The default parameters for various OSELOTS data processing
 list_suffix|.list
+text_suffix|.txt
 image_suffix|.fits
 master_bias_root|BIAS
 master_dark_root|DARK
@@ -12,11 +13,12 @@ spec_axis|0
 processed_file_suffix|_proc
 figure_suffix|.pdf
 spectrum_suffix|_spec
+multistep_spectrum_suffix|_specSteps
 perp_spec_suffix|_perp_spec
 n_std_for_strong_line_ref|30.0
-n_std_for_strong_line|15.0
+n_std_for_strong_line|10.0
 n_std_for_full_line_ref|25.0
-n_std_for_full_line|4.0
+n_std_for_full_line|5.0
 sig_clip_for_line_width|3.5
 ghosts_n_sig_width|10
 background_fit_order|2
@@ -54,6 +56,8 @@ wavelength_fit_scalings|[1.0,1.0,1000.0]
 ref_spec_solution_file|OSELOTSWavelengthSolution2.txt
 ref_throughput_file|DH2000Throughput.csv
 throughput_file|OSELOT_throughput.txt
+abs_throughput_wavelength|637
+abs_throughput_Ry_per_ADU|5.996
 background_buffer_for_measuring_std|40
 continuum_smoothing_pix|2
 continuum_seed_file|SeedWavelengthsForSpectrum.txt
@@ -65,20 +69,25 @@ n_ignore_ref_sky_lines_file|3
 init_seeing_guess|1.0
 seeing_fit_order|2
 slice_std_thresh_for_iding_new_lines|3
-pixel_width_to_fit_line|5
+pixel_width_to_fit_line|2
 pixel_width_to_fit_ref_line|2
 refined_pixel_width_to_fit_line|1
 background_bin_width|10
 n_pix_above_thresh_for_new_line_in_slice|2
-max_pix_centroid_shift|3.0
+max_pix_centroid_shift|2.0
 stack_line_dict_id|FULL
 sig_clip_background|5.0
 energy_to_photon_conversion|31630000.0
 stacked_image_prefix|StackedOSELOTSImage
 exposure_start_keyword|STARTEXP
+exp_time_keyword|EXPTIME
 stacked_image_keyword|FULL
 ided_lines_keyword|LINES
 date_format|%Y-%m-%dT%H:%M:%SZ
-fit_data_wavelength_range|[550,1100]
-background_cut_wavelengths|[575, 1175]
+fit_data_wavelength_range|[555,1045]
+background_cut_wavelengths|[525, 1125]
 background_fit_pix_range|[[150, 150], [300, 300]]
+n_pix_for_background_noise|10
+image_dimensions|[1024, 1024]
+n_sigma_for_scatter_correction|15.0
+scatter_blur_gauss_sigma|5
