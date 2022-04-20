@@ -310,8 +310,8 @@ class SpectrumProcessor:
 
         return image_data, image_header
 
-    def makeMasterDark(self, master_dark_file, target_dir, master_bias_file,
-                       dark_list = 'Dark.list', bias_sub_prefix = 'b_',
+    def makeMasterDark(self, master_dark_file, target_dir, master_bias_file, master_bias_level_file,
+                       dark_list = 'DARK.list', bias_sub_prefix = 'b_',
                        dark_x_partitions = 2, dark_y_partitions = 2,
                        remove_intermediate_files = 0 ):
         """
@@ -329,6 +329,7 @@ class SpectrumProcessor:
         if not(dark_list_exists):
             print ('Unable to find dark list: ' + target_dir + dark_list)
             return 0
+        print ('target_dir + dark_list = ' + str(target_dir + dark_list))
         dark_images=np.loadtxt(target_dir + dark_list, dtype='str')
         if len(np.shape(dark_images)) == 0:
             dark_images = [str(dark_images)]
@@ -338,7 +339,7 @@ class SpectrumProcessor:
         for i in range(len(dark_images)):
             dark_file = dark_images[i]
             single_dark_data, single_dark_header = can.readInDataFromFitsFile(dark_file, target_dir)
-            single_dark_data, single_dark_header = biasSubtract(single_dark_data, single_dark_header, master_bias_file)
+            single_dark_data, single_dark_header = self.biasSubtract(single_dark_data, single_dark_header, master_bias_file, master_bias_level_file)
             exp_times[i] = float(single_dark_header['EXPTIME'])
             can.saveDataToFitsFile(np.transpose(single_dark_data), bias_sub_prefix + dark_file, target_dir, header = single_dark_header, overwrite = True, n_mosaic_extensions = 0)
             m_dark_header = single_dark_header
@@ -1852,7 +1853,7 @@ class SpectrumProcessor:
             master_dark_exists = os.path.isfile(self.target_dir + self.master_dark_file)
             if not(master_dark_exists):
                 print ('Making master dark file.  Will be saved to ' + self.target_dir + self.master_dark_file)
-                master_dark_exists = self.makeMasterDark(self.master_dark_file, self.target_dir, self.master_bias_image_file, self.master_bias_level_file)
+                master_dark_exists = self.makeMasterDark(self.master_dark_file, self.target_dir, self.master_bias_image_file, self.master_bias_level_file, dark_list = self.master_dark_list)
             if not(master_dark_exists):
                 print ('Unable to find master dark file, ' + self.target_dir + self.master_dark_file + ', and also could not make it.  Returning without processing.')
                 #sys.exit()
@@ -3193,39 +3194,45 @@ class SpectrumProcessor:
         self.strong_line_2d_profile_fit = None
 
 if __name__ == "__main__":
-    date = ['2021', '12', '28']
-    f_pos = '26p35'
-    do_dark = 1
+    date = ['2022', '01', '20']
+    f_pos = '26p65'
+    do_dark = 1 
     target_dir = '/Users/sashabrownsberger/Documents/Harvard/physics/stubbs/skySpectrograph/data/ut' + ''.join(date) + '/'
     scatter_data_dir = '/Users/sashabrownsberger/Documents/Harvard/physics/stubbs/skySpectrograph/data/ut' + ''.join(date) + '/'
     scatter_data_key_file = 'scatter_map_Mono_' + '_'.join(date) + '.txt'
     print ('scatter_data_dir + scatter_data_key_file = ' + str(scatter_data_dir + scatter_data_key_file))
     processor = SpectrumProcessor(target_dir, show_fits = 0, scatter_data_dir = scatter_data_dir, scatter_data_key_file = scatter_data_key_file, date = date, do_dark = do_dark)
 
+    """
     cal_waves = [int(wave) for wave in np.arange(750, 938.1, 2)]
-    n_dark_imgs_per_wave = 1
-    n_bias_imgs_per_wave = 2
-    n_exp_imgs_per_wave = 5
-    start_bias_number = 36
-    KR1_nums = [15, 17, 19]
+    n_dark_imgs_per_wave = 0
+    n_bias_imgs_per_wave = 1
+    n_exp_imgs_per_wave = 1
+    start_bias_number = 50
+    KR1_nums = range(28, 39)
     n_imgs_per_cycle = (n_dark_imgs_per_wave + n_bias_imgs_per_wave + n_exp_imgs_per_wave)
-    bias_nums = [KR1_nums[0] - 1] + [num + 1 for num in KR1_nums] + can.flattenListOfLists( [[[start_bias_number + j * (n_dark_imgs_per_wave + 1) + k * n_bias_imgs_per_wave // 2 + i * n_imgs_per_cycle for k in range(n_bias_imgs_per_wave // 2)] for j in range(n_dark_imgs_per_wave + 1)] for i in range(len(cal_waves))], fully_flatten = 1 )
+    bias_nums = [[[start_bias_number + j * (n_dark_imgs_per_wave + 1) + k * n_bias_imgs_per_wave // 2 + i * n_imgs_per_cycle for k in range(n_bias_imgs_per_wave // 2)] for j in range(n_dark_imgs_per_wave + 1)] for i in range(len(cal_waves))]
+    print ('bias_nums = ' + str(bias_nums))
+    can.flattenListOfLists( bias_nums, fully_flatten = 1 )
     print ('bias_nums = ' + str(bias_nums))
     dark_nums = can.flattenListOfLists( [[start_bias_number + n_bias_imgs_per_wave // 2 + j + i * n_imgs_per_cycle for j in range(n_dark_imgs_per_wave)] for i in range(len(cal_waves) - 1)] )
     print ('dark_nums = ' + str(dark_nums))
     cal_nums = can.flattenListOfLists([[start_bias_number + n_bias_imgs_per_wave + n_dark_imgs_per_wave + n_imgs_per_cycle * i + j for j in range(n_exp_imgs_per_wave)] for i in range(-1, len(cal_waves)-1)])
     print ('cal_nums = ' + str(cal_nums))
-    bias_imgs = ['Bias_' + '_'.join([str(elem) for elem in date]) + '_' + str(i) + '.fits' for i in bias_nums]
-    processor.plotBiasLevels(bias_list = 'BIAS.list')
-    #dark_nums = []
-    dark_imgs = ['NoLight_f' + f_pos + '_' + '_'.join([str(elem) for elem in date]) + '_' + str(i) + '.fits' for i in dark_nums]
-    can.saveListsToColumns(dark_imgs, 'DARK.list', target_dir)
-    scatter_correct = 1
-    background_correct = 0
-    determine_spec_sol = 1
+    """
+    bias_nums = list(range(13, 527, 2))
+    dark_nums = list(range(14, 31, 2))
+    KR1_nums = list(range(12, 13))
     bias_imgs = ['Bias_' + '_'.join([str(elem) for elem in date]) + '_' + str(i) + '.fits' for i in bias_nums]
     can.saveListsToColumns(bias_imgs, 'BIAS.list', target_dir)
-    processor.plotBiasLevels(bias_list = 'BIAS.list')
+    #processor.plotBiasLevels(bias_list = 'BIAS.list')
+    #dark_nums = []
+    dark_imgs = ['Cover_f' + f_pos + '_' + '_'.join([str(elem) for elem in date]) + '_' + str(i) + '.fits' for i in dark_nums]
+    can.saveListsToColumns(dark_imgs, 'DARK.list', target_dir)
+    scatter_correct = 0
+    background_correct = 0
+    determine_spec_sol = 0
+    bias_imgs = ['Bias_' + '_'.join([str(elem) for elem in date]) + '_' + str(i) + '.fits' for i in bias_nums]
     KR1_imgs = ['KR1_f' + f_pos + '_' + '_'.join([str(elem) for elem in date]) + '_' + str(i) + '.fits' for i in KR1_nums]
     can.saveListsToColumns(KR1_imgs, 'KR1.list', target_dir )
     ref_spec_solution_file = 'OSELOTSWavelengthSolution.txt'
@@ -3239,15 +3246,16 @@ if __name__ == "__main__":
             processor.measureStrengthOfLinesInImage(img, show_fits = 0, line_dict_id = img_num, redetermine_spec_range = 0)
 
     #Now we should reinitiate the processor so that we don't try to match reference and sky lines
-    processor = SpectrumProcessor(target_dir, show_fits = 0, scatter_data_dir = scatter_data_dir, scatter_data_key_file = scatter_data_key_file, date = date)
-    dark_sky_nums = KR1_nums
-    all_sky_nums = KR1_nums
-    dark_sky_imgs = ['KR1_f' + f_pos + '_' + '_'.join([str(elem) for elem in date]) + '_' + str(i) + '.fits' for i in dark_sky_nums]
-    all_sky_imgs = ['KR1_f' + f_pos + '_' + '_'.join([str(elem) for elem in date]) + '_' + str(i) + '.fits' for i in all_sky_nums]
+    processor = SpectrumProcessor(target_dir, show_fits = 0, scatter_data_dir = scatter_data_dir, scatter_data_key_file = scatter_data_key_file, date = date, do_dark = do_dark)
+    dark_sky_nums = list(range(32, 527, 2))
+    all_sky_nums = list(range(32, 527, 2))
+    dark_sky_imgs = ['Sky_f' + f_pos + '_' + '_'.join([str(elem) for elem in date]) + '_' + str(i) + '.fits' for i in dark_sky_nums]
+    all_sky_imgs = ['Sky_f' + f_pos + '_' + '_'.join([str(elem) for elem in date]) + '_' + str(i) + '.fits' for i in all_sky_nums]
 
     #all_sky_nums = [161, 162, 163]
     #dark_sky_imgs = [ 'Mono_' + str(800) + 'nm_f' + focus_str + '_' + '_'.join(date) + '_' + str(j) + '.fits' for j in all_sky_nums]
     #all_sky_imgs = [ 'Mono_' + str(800) + 'nm_f' + focus_str + '_' + '_'.join(date) + '_' + str(j) + '.fits' for j in all_sky_nums ]
+
     processor.pullCombinedSpectrumFromImages(dark_sky_imgs, show_fits = None, analyze_spec_of_ind_images = 1, line_dict_id = None, plot_title = 'Stacked Spectrum', save_intermediate_images = 0, stacked_image_name = 'StackedSkyImage_img' + str(dark_sky_nums[0]) + 'To' + str(dark_sky_nums[-1]), apply_scatter_correction = scatter_correct)
     for i in range(len(all_sky_imgs)):
         img = all_sky_imgs[i]
