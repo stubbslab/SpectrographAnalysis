@@ -13,7 +13,7 @@
 # -u -> universal prefix with which these images will be saved; generally should be observation date 
 # -l -> should computer wait to acquire until temperature is locked (1 for yes, 0 for no).  Usually 0. 
 # -d -> full path to directory where observations should be saved 
-while getopts ":e:o:t:n:s:g:r:p:f:u:l:d:" opt; do
+while getopts ":e:o:t:n:s:g:r:p:f:h:u:l:d:" opt; do
     case $opt in
         e)
              #echo "Setting exposure time to: $OPTARG" >&2
@@ -54,6 +54,13 @@ while getopts ":e:o:t:n:s:g:r:p:f:u:l:d:" opt; do
              #echo "Setting focus position to: OPTARG" >&2
              #focus_pos=$OPTARG
              echo focus_pos is now $focus_pos
+             ;;
+        h)  
+             start_stage_home=$OPTARG
+             echo OPTARG is $OPTARG 
+             #echo "Setting home stage flag to: OPTARG" >&2
+             #start_stage_home=$OPTARG
+             echo start_stage_home is now $start_stage_home
              ;;
         u)
              echo "Setting universal prefix to: $OPTARG"
@@ -115,6 +122,9 @@ fi
 if [ -z $focus_pos ]; then
     focus_pos=18.7 #0 is minimium (home); ~25 is maximum of stage given current configuration.  This should be checked whenever spectrograph is redeployed; 28 is maximum of stage itself; 
 fi  
+if [ -z $start_stage_home ]; then
+    start_stage_home=1 #When first turned on, OSELOTS must go home, to know where home is.  Once that is done, stage does not need to return home every time.
+fi  
 if [ -z ${full_save_dir+x} ]; then
     full_save_dir="/home/sashab/Documents/PIXISData/$date_str/"
 fi 
@@ -145,7 +155,7 @@ script_dir="/opt/PrincetonInstruments/picam/samples/projects/gcc/objlin/x86_64/d
 python_dir="/home/sashab/Documents/sashas_python_scripts/pixis"
 
 #Move stage to specified focus position
-start_stage_home=0
+#start_stage_home=0
 echo focus_pos is $focus_pos
 echo start_stage_home is $start_stage_home 
 python "$python_dir"/moveStageToFocusPosition.py $focus_pos $start_stage_home  
