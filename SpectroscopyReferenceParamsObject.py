@@ -222,6 +222,9 @@ class CommandHolder:
     def getStartExposureKeyword(self):
         return str(self.getOSELOTSVar('exposure_start_keyword'))
 
+    def getFocusKeyword(self):
+        return str(self.getOSELOTSVar('focus_keyword'))
+
     def getLinesDictKeyword(self):
         return str(self.getOSELOTSVar('ided_lines_keyword'))
 
@@ -321,6 +324,13 @@ class CommandHolder:
             orthogonal to the spectrum.
         """
         return str(self.getOSELOTSVar('perp_spec_suffix'))
+
+    def getOrthogonalSpectrumFileRoot(self):
+        """
+        The root of files containing information on the perpendicular
+            spectrum rows.
+        """
+        return str(self.getOSELOTSVar('perp_spec_file_root'))
 
     def getNStdForStrongRefLines(self):
         """

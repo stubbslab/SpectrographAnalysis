@@ -1,7 +1,7 @@
 """
 Written by Sasha Brownsberger (sashabrownsberger@g.harvard.edu)
 
-Last edited 10/15/2020
+Last edited 05/20/2022
 
 This file defines a variety of generally useful and project-agnostic functions.
 These range from reading/writing various file types to sorting a set of
@@ -1493,15 +1493,12 @@ def saveDataToFitsFile(fits_data, file_name, save_dir, header = 'default', overw
     if data_type in ['image', 'Image', 'IMAGE', 'img', 'Img', 'IMG']:
         #print ('n_mosaic_extensions = ' + str(n_mosaic_extensions))
         if n_mosaic_extensions <= 1:
-            print ('Here 1')
-            print ('np.shape(fits_data) = ' + str(np.shape(fits_data)))
             if header != 'default':
                 master_hdu = fits.PrimaryHDU(fits_data.transpose(), header = header)
             else:
                 master_hdu = fits.PrimaryHDU(fits_data.transpose())
             master_hdul = fits.HDUList([master_hdu])
         else:
-            print ('Here 1')
             master_hdus = [fits.PrimaryHDU(header = header[0])] + [fits.ImageHDU(fits_data[i].transpose(), header = header[i+1]) for i in range(n_mosaic_extensions)]
             #print ('master_hdus = ' )
             #print ( master_hdus )
@@ -1514,10 +1511,8 @@ def saveDataToFitsFile(fits_data, file_name, save_dir, header = 'default', overw
         default_col_format = 'J'
         if col_formats is None:
             col_formats = [default_col_format for array in fits_data]
-        print ('col_formats = ' + str(col_formats))
         #for i in range(len(fits_data)):
         #    print ('[i, fits_data[i], col_formats[i], col_names[i]] = ' + str([i, fits_data[i], col_formats[i], col_names[i]]))
-        print ('len(fits_data) = ' + str(len(fits_data)))
         col_objects = fits.ColDefs([fits.Column(name = col_names[i], format = col_formats[i], array = np.array(fits_data[i])) for i in range(len(fits_data))])
         master_hdu = fits.BinTableHDU.from_columns(col_objects)
         master_hdu.writeto(save_dir + file_name, overwrite = overwrite)
@@ -1886,3 +1881,17 @@ def recursiveStrToListOfLists(str_of_lists_of_lists, elem_type_cast = str, list_
                 elems_of_list = elems_of_list + [elem_type_cast(elem)]
 
     return elems_of_list
+
+
+def getUserInputWithDefault(question, default):
+    """
+    Gets user input from command line, returning the default value of
+        user just returns.
+    EXAMPLE:
+    import cantrips as can
+    f_num = int(can.getUserInputWithDefault('What is your favorite number? (Default: 69): ', '69'))
+    """
+    answer = input(question)
+    if len(answer) == 0:
+        answer = default
+    return answer

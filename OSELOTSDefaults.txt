@@ -15,6 +15,7 @@ figure_suffix|.pdf
 spectrum_suffix|_spec
 multistep_spectrum_suffix|_specSteps
 perp_spec_suffix|_perp_spec
+perp_spec_file_root|IdentifiedSpecRange
 n_std_for_strong_line_ref|30.0
 n_std_for_strong_line|10.0
 n_std_for_full_line_ref|25.0
@@ -53,9 +54,9 @@ coarse_search_param_range|[[-1000.0, -100.0],[1.0,1.5]]
 coarse_search_n_steps|[51,51]
 wavelength_solution_order|2
 wavelength_fit_scalings|[1.0,1.0,1000.0]
-ref_spec_solution_file|OSELOTSWavelengthSolution2.txt
+ref_spec_solution_file|OSELOTSWavelengthSolution.txt
 ref_throughput_file|DH2000Throughput.csv
-throughput_file|OSELOT_throughput.txt
+throughput_file|OSELOTS_throughput.txt
 abs_throughput_wavelength|637
 abs_throughput_Ry_per_ADU|5.996
 background_buffer_for_measuring_std|40
@@ -80,6 +81,7 @@ sig_clip_background|5.0
 energy_to_photon_conversion|31630000.0
 stacked_image_prefix|StackedOSELOTSImage
 exposure_start_keyword|STARTEXP
+focus_keyword|FOCUSPOS
 exp_time_keyword|EXPTIME
 stacked_image_keyword|FULL
 ided_lines_keyword|LINES
