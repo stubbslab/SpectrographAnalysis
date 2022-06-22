@@ -1,35 +1,35 @@
-#!/bin/bash 
-#echo "Defining exposure parameters..." 
+#!/bin/bash
+#echo "Defining exposure parameters..."
 # -t -> exposure time, in ms
 # -h -> name of target, as it will appear in Fits header
-# -n -> number of exposures at this exposure_time 
-# -s -> should shutter act normally, opening during exposure (0), or stay closed at all times (1) 
-# -g -> Define the gain.  It can be set to 0, 1, or 2, which correspond to low, medium, or high 
-#           numbers of ADUs per electron, respectively.  
+# -n -> number of exposures at this exposure_time
+# -s -> should shutter act normally, opening during exposure (0), or stay closed at all times (1)
+# -g -> Define the gain.  It can be set to 0, 1, or 2, which correspond to low, medium, or high
+#           numbers of ADUs per electron, respectively.
 #           For the PIXIS 1024R, low = (4e-/ADU), medium =(2e-/ADU), and high = (1e-/ADU).
 # -r -> the readout speed.  Can be faster and noiser (1) or slower and less noisy (0).
-# -p -> specific prefix with which these images will be saved; generally set to object name 
-# -f -> focus position of lens, in mm.  Can be between 0 and 28. 
-# -u -> universal prefix with which these images will be saved; generally should be observation date 
-# -l -> should computer wait to acquire until temperature is locked (1 for yes, 0 for no).  Usually 0. 
-# -d -> full path to directory where observations should be saved 
+# -p -> specific prefix with which these images will be saved; generally set to object name
+# -f -> focus position of lens, in mm.  Can be between 0 and 28.
+# -u -> universal prefix with which these images will be saved; generally should be observation date
+# -l -> should computer wait to acquire until temperature is locked (1 for yes, 0 for no).  Usually 0.
+# -d -> full path to directory where observations should be saved
 while getopts ":e:o:t:n:s:g:r:p:f:h:u:l:d:" opt; do
     case $opt in
         e)
              #echo "Setting exposure time to: $OPTARG" >&2
-             exp_time=${OPTARG%.*} #We must round exposure time to nearest millisecond 
+             exp_time=${OPTARG%.*} #We must round exposure time to nearest millisecond
              echo "Set exposure time (in ms) to: $exp_time"
              ;;
         o)
-             echo "Setting target name to: $OPTARG" >&2 
+             echo "Setting target name to: $OPTARG" >&2
              target_name=$OPTARG
              ;;
-        t) 
+        t)
              echo "Setting end time to: $OPTARG" >&2
              stoptime=$OPTARG
              ;;
         n)
-             echo "Setting number of exposures to: $OPTARG"  
+             echo "Setting number of exposures to: $OPTARG"
              n_exps=$OPTARG
              ;;
         s)
@@ -48,16 +48,16 @@ while getopts ":e:o:t:n:s:g:r:p:f:h:u:l:d:" opt; do
              echo "Setting specific prefix to: $OPTARG" >&2
              specific_prefix=$OPTARG
              ;;
-        f)  
+        f)
              focus_pos=$OPTARG
-             echo OPTARG is $OPTARG 
+             echo OPTARG is $OPTARG
              #echo "Setting focus position to: OPTARG" >&2
              #focus_pos=$OPTARG
              echo focus_pos is now $focus_pos
              ;;
-        h)  
+        h)
              start_stage_home=$OPTARG
-             echo OPTARG is $OPTARG 
+             echo OPTARG is $OPTARG
              #echo "Setting home stage flag to: OPTARG" >&2
              #start_stage_home=$OPTARG
              echo start_stage_home is now $start_stage_home
@@ -74,7 +74,7 @@ while getopts ":e:o:t:n:s:g:r:p:f:h:u:l:d:" opt; do
              #echo "Setting save directory to: $OPTARG" >&2
              #full_save_dir=$OPTARG
              date_str=$OPTARG
-             echo "Setting reference date to $date_str" 
+             echo "Setting reference date to $date_str"
              ;;
         \?)
              echo "Invalid option: -$OPTARG" >&2
@@ -85,16 +85,36 @@ while getopts ":e:o:t:n:s:g:r:p:f:h:u:l:d:" opt; do
              exit 1
     esac
 done
+
+#We switch into which directory data is saved at noon, Chile time.  Which is 1600 UTC.
+now=$(date +"%T")
+today=$(date +"%Y_%m_%d")
+yesterday=$(date -d "yesterday" +"%Y_%m_%d")
+date_switch_time=16:00:00
+if [[ "$now" < "$date_switch_time" ]] ; then
+    date_str="$yesterday"
+else
+    date_str="$today"
+fi
+
 if [ -z $exp_time ]; then
     exp_time=0.0
 fi
+#By default stop at 07:59 Chile time, or 11:59 UTC.  If it is currently morning, we stop on this date.  Otherwise, we stop tomorrow
+default_pause_time=11:59:00
 if [ -z $stoptime ]; then
-    stoptime=2100:01:01:01:01
-fi 
+    if [[ "$now" < "$default_pause_time" ]] ; then
+      stopDate=$(date +"%Y:%m:%d")
+    else
+      stopDate=$(date -d "tomorrow" +"%Y:%m:%d")
+    fi
+    stoptime="$stopDate":"$default_pause_time"
+fi
+echo If nothing else happens, we will stop observations at: "$stoptime" 
 
 if [ -z $target_name ]; then
    target_name="UnknownTarget"
-fi  
+fi
 if [ -z $n_exps ]; then
     n_exps=1
 fi
@@ -105,14 +125,14 @@ if [ -z $gain_key ]; then
     gain_key=1
 fi
 if [ -z $fast ]; then
-    fast=0 
+    fast=0
 fi
 if [ -z $specific_prefix ]; then
-    specific_prefix="MissingName"
+    specific_prefix="$target_name"
 fi
-if [ -z $date_str ]; then 
-    date_str="2000_01_01"
-fi
+#if [ -z $date_str ]; then
+#    date_str="2000_01_01"
+#fi
 if [ -z $universal_prefix ]; then
     universal_prefix=$date_str"_"
 fi
@@ -120,35 +140,35 @@ if [ -z $do_lock ]; then
     do_lock=0
 fi
 if [ -z $focus_pos ]; then
-    focus_pos=18.7 #0 is minimium (home); ~25 is maximum of stage given current configuration.  This should be checked whenever spectrograph is redeployed; 28 is maximum of stage itself; 
-fi  
+    focus_pos=18.7 #0 is minimium (home); ~25 is maximum of stage given current configuration.  This should be checked whenever spectrograph is redeployed; 28 is maximum of stage itself;
+fi
 if [ -z $start_stage_home ]; then
     start_stage_home=1 #When first turned on, OSELOTS must go home, to know where home is.  Once that is done, stage does not need to return home every time.
-fi  
+fi
 if [ -z ${full_save_dir+x} ]; then
     full_save_dir="/home/sashab/Documents/PIXISData/$date_str/"
-fi 
+fi
 #Declare exposure time, in ms
 #exp_time=400000.0 #600000.0
-#Put name of target, as it will appear in Fits header 
-#target_name="monochrometer_1100nm" #bias, dark, VLM-635-11 laser, KR-1 spectrum, sky, monochrometer_500nm, ... 
+#Put name of target, as it will appear in Fits header
+#target_name="monochrometer_1100nm" #bias, dark, VLM-635-11 laser, KR-1 spectrum, sky, monochrometer_500nm, ...
 #Declare number of exposures
 #n_exps=1
-#Define if shutter should act normally, opening during exposure (0), or stay closed at all times (1) 
+#Define if shutter should act normally, opening during exposure (0), or stay closed at all times (1)
 #shutter=0
-#Define the gain.  It can be set to 0, 1, or 2, which correspond to low, medium, or high 
-#  numbers of ADUs per electron, respectively.  
-# For the PIXIS 1024R, low = (4e-/ADU), medium =(2e-/ADU), and high = (1e-/ADU). 
+#Define the gain.  It can be set to 0, 1, or 2, which correspond to low, medium, or high
+#  numbers of ADUs per electron, respectively.
+# For the PIXIS 1024R, low = (4e-/ADU), medium =(2e-/ADU), and high = (1e-/ADU).
 #gain_key=2
-#Define the readout speed.  Can be faster and noiser (1) or slower and less noisy (0). 
+#Define the readout speed.  Can be faster and noiser (1) or slower and less noisy (0).
 #fast=0
-#Declare prefix with which images will be saved 
+#Declare prefix with which images will be saved
 #specific_prefix="mono_1100nm" #should be set to target name
 #universal_prefix="_2019_03_21_" #should be set to start date
 image_file_prefix=$specific_prefix"_"$universal_prefix
-#The name of the temporary file used to store the temperature of the CCD 
-parameter_file_prefix="exposure_params" 
-#Decide if you want to wait to acquire until temperature is locked 
+#The name of the temporary file used to store the temperature of the CCD
+parameter_file_prefix="exposure_params"
+#Decide if you want to wait to acquire until temperature is locked
 #do_lock=0
 
 script_dir="/opt/PrincetonInstruments/picam/samples/projects/gcc/objlin/x86_64/debug"
@@ -157,21 +177,21 @@ python_dir="/home/sashab/Documents/sashas_python_scripts/pixis"
 #Move stage to specified focus position
 #start_stage_home=0
 echo focus_pos is $focus_pos
-echo start_stage_home is $start_stage_home 
-python "$python_dir"/moveStageToFocusPosition.py $focus_pos $start_stage_home  
+echo start_stage_home is $start_stage_home
+python "$python_dir"/moveStageToFocusPosition.py $focus_pos $start_stage_home
 
 #full_save_dir="/home/sashab/Documents/PIXISData/2019_03_21/"
 if [ ! -d "$full_save_dir" ]; then
-  mkdir $full_save_dir 
-  chmod -R a+rwX $full_save_dir 
+  mkdir $full_save_dir
+  chmod -R a+rwX $full_save_dir
 fi
 
 image_number_tracker_file="image_tally.txt"
 start_index=1
 if [ ! -f $full_save_dir$image_number_tracker_file ]; then
-    touch $full_save_dir$image_number_tracker_file  
+    touch $full_save_dir$image_number_tracker_file
     echo $start_index-1 > $full_save_dir$image_number_tracker_file
-fi 
+fi
 typeset -i tally=$(cat $full_save_dir$image_number_tracker_file)
 
 remove_raw=1
@@ -181,25 +201,25 @@ sequence_number=1
 while [[ "$currenttime" < "$stoptime" ]] && [ "$sequence_number" -le "$n_exps" ]
 do
     #currenttime=$(date +%Y:%m:%d:%H:%M)
-    echo Current time is "$currenttime" 
+    echo Current time is "$currenttime"
     echo Stop time is "$stoptime"
-    echo We have not passed stop time. 
+    echo We have not passed stop time.
     #if [[ "$currenttime" > "$stoptime" ]]
-    #then 
-    #    echo We have passed stop time. 
-    #else 
-    #    echo We have not passed stop time. 
-    #fi 
+    #then
+    #    echo We have passed stop time.
+    #else
+    #    echo We have not passed stop time.
+    #fi
     echo Working on exposure "$sequence_number" of "$n_exps ..."
     sequence_number=$(($sequence_number+1))
     tally=$(($tally+1))
-    echo "tally is $tally" 
+    echo "tally is $tally"
 
     full_image_file_prefix="$image_file_prefix"
     full_parameter_file_prefix="$parameter_file_prefix"
     full_image_file_prefix="$full_image_file_prefix$tally"
     full_parameter_file_prefix="$full_parameter_file_prefix$tally"
-    full_parameter_file_name="$full_parameter_file_prefix.txt" 
+    full_parameter_file_name="$full_parameter_file_prefix.txt"
     raw_file="$full_image_file_prefix.raw"
     #image_file_name="$full_file_prefix"
 
@@ -213,19 +233,18 @@ do
     echo "Raw data acquired.  Now converting to .fits image(s)... "
 
     local_end_time=$(date +%Y:%m:%d:%H:%M)
-    #exit 
-    python $python_dir/ConvertPIXISRawToFits.py $raw_file $full_image_file_prefix $full_parameter_file_name  "" $full_save_dir "$target_name" $exp_time $shutter $gain_key $fast $focus_pos $local_start_time $local_end_time 
+    #exit
+    python $python_dir/ConvertPIXISRawToFits.py $raw_file $full_image_file_prefix $full_parameter_file_name  "" $full_save_dir "$target_name" $exp_time $shutter $gain_key $fast $focus_pos $local_start_time $local_end_time
     echo "Just saved new fits image to $full_save_dir$full_image_file_prefix.fits "
-    rm $full_parameter_file_name 
+    rm $full_parameter_file_name
     #optionally, remove the raw data file names
     if [ "$remove_raw" -eq 1 ]; then
-        rm $raw_file 
+        rm $raw_file
     fi
- 
+
     echo $tally > $full_save_dir$image_number_tracker_file
-    currenttime=$(date +%Y:%m:%d:%H:%M) 
+    currenttime=$(date +%Y:%m:%d:%H:%M)
 done
-echo We have either passed the stop time or exceeded the specified number of images to take. Stopping sequence. 
+echo We have either passed the stop time or exceeded the specified number of images to take. Stopping sequence.
 
 echo "Done."
-
