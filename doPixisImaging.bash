@@ -110,7 +110,8 @@ if [ -z $stoptime ]; then
     fi
     stoptime="$stopDate":"$default_pause_time"
 fi
-echo If nothing else happens, we will stop observations at: "$stoptime" 
+echo date string is: "$datestr" 
+echo If nothing else happens, we will stop observations at: "$stoptime"
 
 if [ -z $target_name ]; then
    target_name="UnknownTarget"
