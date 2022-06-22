@@ -1889,9 +1889,71 @@ def getUserInputWithDefault(question, default):
         user just returns.
     EXAMPLE:
     import cantrips as can
-    f_num = int(can.getUserInputWithDefault('What is your favorite number? (Default: 69): ', '69'))
+    f_num = int(can.getUserInputWithDefault('What is your favorite
+    number? (Default: 69): ', '69'))
     """
     answer = input(question)
     if len(answer) == 0:
         answer = default
     return answer
+
+def recBuildTightestCluster(elems_to_still_add, pairs_dist_dict, min_n_in_cluster, building_cluster, building_cluster_sep, best_cluster, max_sep ):
+    """
+    Recursively builds all possible combinations and measures their
+    minimum associated max separation.
+
+    Helper function for findTightestGroupingFromPairs function.
+    """
+    print('\r' + 'Current cluster: ' + str(building_cluster + ['- ' for i in range(min_n_in_cluster - len(building_cluster))]) + ' w/ sep ' + str(round_to_n(building_cluster_sep, 3)) + '; best cluster: ' + str(best_cluster + ['- ' for i in range(min_n_in_cluster - len(best_cluster ))]) + ' w/ sep ' + str(round_to_n(max_sep, 3)), sep=' ', end='', flush=True)
+    #If this there are no elements left to add, we also call
+    #   it, and return the incomplete cluster.
+    if len(elems_to_still_add) == 0:
+        #print ('We have run out of additional components to add.  Returning incomplete cluster: ' + str(building_cluster))
+        return [building_cluster, building_cluster_sep]
+    #If ANY of the new pairs are bigger than the current tightest
+    #   cluster (max_sep), we know this cluster won't work, so we
+    #   stop here.
+    elif building_cluster_sep > max_sep:
+        #print ('For partial cluster: ' + str(building_cluster) + ', building_cluster_sep = ' + str(building_cluster_sep) + ' > max_sep = ' + str(max_sep) + '. Cutting short.')
+        return [building_cluster, building_cluster_sep]
+    #Or if this new tighter cluster is fully built with min_n_in_cluster,
+    #   then it is the new tightest cluster.  So we return it.
+    #   (return is same, but kept as two clauses in case we
+    #   want to treat slightly differently down stream).
+    elif len(building_cluster) == min_n_in_cluster:
+        #print (' Returning built cluster: ' + str(building_cluster))
+        return [building_cluster, building_cluster_sep]
+    #Otherwise, this partial cluster is a candidate.  We need to
+    #   finish building all possible clusters that contain it.
+    for i in range(len(elems_to_still_add)):
+        new_elem_to_add = elems_to_still_add[0]
+        elems_to_still_add = elems_to_still_add[1:]
+        new_cluster = building_cluster + [new_elem_to_add]
+        #print ('new_cluster = ' + str(new_cluster))
+        new_pairs = [(i, new_elem_to_add) for i in building_cluster]
+        new_seps = [pairs_dist_dict[pair] for pair in new_pairs]
+        new_cluster_sep = np.max([building_cluster_sep] + new_seps)
+        done_cluster, done_cluster_max_sep = recBuildTightestCluster(elems_to_still_add, pairs_dist_dict, min_n_in_cluster, new_cluster, new_cluster_sep, best_cluster, max_sep )
+        #print ('Just returned [done_cluster, done_cluster_max_sep] = ' + str([done_cluster, done_cluster_max_sep]))
+        if len(done_cluster) >= min_n_in_cluster and done_cluster_max_sep < max_sep:
+            #print ('Updating best_cluster to: ' + str(done_cluster) + ', with max_sep = ' + str(done_cluster_max_sep) + ' which is < previous best cluster: ' + str(best_cluster) + ' with max sep of ' + str(max_sep))
+            max_sep = done_cluster_max_sep
+            best_cluster = done_cluster.copy()
+    return best_cluster, max_sep
+
+
+
+
+def findTightestGroupingFromPairs(pairs_dist_dict, min_n_in_cluster ):
+    """
+    For a pair of indeces with distances between those indeces, passed
+    as the dictionry pairs_dist_dict, finds the clustering of min_n_in_cluster
+    objects with the minimum mutual separation (i.e. the cluster with
+    the smallest maximum pair separation).
+    """
+    unique_elems = np.unique(flattenListOfLists([list(key) for key in pairs_dist_dict.keys()])).tolist()
+    #unique_elems = niceReverse(unique_elems)
+    print ('Recursively finding tightest cluster in provided data: ')
+    tightest_cluster, tightest_sep = recBuildTightestCluster(unique_elems, pairs_dist_dict, min_n_in_cluster, [], 0.0, [], np.inf)
+    print ('')
+    return [tightest_cluster, tightest_sep]
