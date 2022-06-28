@@ -91,10 +91,12 @@ now=$(date +"%T")
 today=$(date +"%Y_%m_%d")
 yesterday=$(date -d "yesterday" +"%Y_%m_%d")
 date_switch_time=16:00:00
-if [[ "$now" < "$date_switch_time" ]] ; then
-    date_str="$yesterday"
-else
-    date_str="$today"
+if [ -z $date_str ]; then
+    if [[ "$now" < "$date_switch_time" ]] ; then
+        date_str="$yesterday"
+    else
+        date_str="$today"
+    fi
 fi
 
 if [ -z $exp_time ]; then
@@ -110,7 +112,7 @@ if [ -z $stoptime ]; then
     fi
     stoptime="$stopDate":"$default_pause_time"
 fi
-echo date string is: "$datestr" 
+echo date string is: "$date_str" 
 echo If nothing else happens, we will stop observations at: "$stoptime"
 
 if [ -z $target_name ]; then
