@@ -7,13 +7,21 @@ import os
 import ProcessRawSpectrumClass as prsc
 import shutil
 
-def getImagesList(image_type_print_string, possible_images, indeces):
+def getCalibrationDir(dir_root, image_type_print_string):
+    cal_data_dir_suffix = bad_img = can.getUserInputWithDefault('Enter the observation night (formatted as YYYY_MM_DD) with the '  + image_type_print_string + ' data you want to use: ', '')
+    cal_data_dir = dir_root + cal_data_dir_suffix + '/'
+    while not(os.path.isdir(cal_data_dir)):
+        print ('Directory ' + str(cal_data_dir) + ' does not exist. ')
+        cal_data_dir = can.getUserInputWithDefault('Please enter the full path to the directory with the ' + image_type_print_string + ' data you want to use: ', dir_root)
+    return cal_data_dir
+
+def getImagesList(image_type_print_string, possible_images, indeces, good_indeces = 0):
     still_imgs_to_add = 1
     indeces_to_add = []
     selected_images = []
     selected_indeces = []
     while still_imgs_to_add:
-        index = int(can.getUserInputWithDefault('Enter the index (trailing number) of the next bad ' + image_type_print_string + ' image.  Just hit [RETURN] when done: ', -1))
+        index = int(can.getUserInputWithDefault('Enter the index (trailing number) of the next ' + ('GOOD' if good_indeces else 'BAD') + ' ' + image_type_print_string + ' image.  Just hit [RETURN] when done: ', -1))
         if index < 0:
             still_imgs_to_add = 0
         else:
@@ -28,11 +36,11 @@ def getImagesList(image_type_print_string, possible_images, indeces):
             print ('Image index ' + str(index) + ' does not appear to match to a viable calibration image.  I will ignore that one.')
     return selected_images, selected_indeces
 
-def trimImagesList(image_type_print_string, imgs, indeces):
+def trimImagesList(image_type_print_string, imgs, indeces, good_indeces = 0):
     bad_imgs_exist = 1
     bad_imgs = []
     while bad_imgs_exist:
-        bad_img = int(can.getUserInputWithDefault('Enter the index (trailing number) of the next bad ' + image_type_print_string + ' image.  Just hit [RETURN] when done: ', -1))
+        bad_img = int(can.getUserInputWithDefault('Enter the index (trailing number) of the next ' + ('GOOD' if good_indeces else 'BAD') + ' ' + 'image.  Just hit [RETURN] when done: ', -1))
         if bad_img < 0:
             bad_imgs_exist = 0
         else:
@@ -45,8 +53,18 @@ def trimImagesList(image_type_print_string, imgs, indeces):
             indeces = can.removeListElement(indeces, bad_spot)
     return imgs, indeces
 
-def getListOfImages(all_files, image_type_print_string, default_prefix, data_image_suffix, select_all_images = 0):
+def getListOfImages(target_dir, dir_root, image_type_print_string, default_prefix, data_image_suffix, select_all_images = 0, check_target_dir = 0):
     prefix = can.getUserInputWithDefault('What prefix should I use to look for ' + image_type_print_string + ' images (default ' + default_prefix + '): ', default_prefix)
+    if check_target_dir:
+         use_default = can.getUserInputWithDefault('Should I use ' + image_type_print_string + ' calibration data from the same night? (y, Y, yes, Yes, YES, or 1 for "yes"; default 1): ', '1')
+         use_default = (use_default in ['y', 'Y', 'yes', 'Yes', 'YES', '1'])
+         if use_default:
+             target_dir = target_dir
+         else:
+              target_dir = getCalibrationDir(dir_root, image_type_print_string)
+    else:
+        target_dir = target_dir
+    all_files = os.listdir(target_dir)
     imgs = [i for i in all_files if prefix == i[0:len(prefix)] and data_image_suffix and (i.split('.')[0].split('_')[-1]).isdigit() ]
     indeces = [int(img.split('_')[-1][0:-len(data_image_suffix)]) for img in imgs]
     imgs, indeces = can.safeSortOneListByAnother(indeces, [imgs, indeces])
@@ -54,7 +72,7 @@ def getListOfImages(all_files, image_type_print_string, default_prefix, data_ima
     print (imgs)
     if select_all_images:
         print ('Because we typically want to use only a few of the ' + image_type_print_string + ' images, we will have the user specify the images they want.')
-        imgs, indeces = getImagesList(image_type_print_string, imgs, indeces)
+        imgs, indeces = getImagesList(image_type_print_string, imgs, indeces, good_indeces = 1)
     else:
         bad_imgs_exist = can.getUserInputWithDefault('Should I ignore any of these ' + image_type_print_string + ' images in the analysis? (y, Y, yes, Yes, YES, or 1 for "yes"; default 0): ', '0')
         bad_imgs_exist = (bad_imgs_exist in ['y', 'Y', 'yes', 'Yes', 'YES', '1'])
@@ -63,7 +81,7 @@ def getListOfImages(all_files, image_type_print_string, default_prefix, data_ima
             print ('Final list of ' + data_image_suffix + ' images is: ')
             print (imgs)
 
-    return prefix, imgs, indeces
+    return prefix, imgs, indeces, target_dir
 
 
 
@@ -74,6 +92,10 @@ if __name__ == "__main__":
     """
     sys_args = sys.argv[1:]
     date_str = sys_args[0]
+
+    #NEW USER: UPDATE THIS VARIABLE!!!!
+    dir_root = '/Users/sashabrownsberger/Documents/Harvard/physics/stubbs/skySpectrograph/data/'
+
     if len(date_str) != 10:
         print ('Did not get properly formatted date for the night to analyze.  I expect a date formatted like: YYYY_MM_DD, passed as 1st argument.')
         sys.exit()
@@ -91,11 +113,9 @@ if __name__ == "__main__":
     get_new_target_dir = can.getUserInputWithDefault('I am going to analyze data in this directory: ' + target_dir + '  Is that okay (y, Y, yes, Yes, YES, or 1 for "yes"; default 1): ', '1')
     if not(get_new_target_dir in ['y', 'Y', 'yes', 'Yes', 'YES', '1']):
         target_dir = input('Please enter the FULL PATH to the directory with the night of data you would like to analyze: ' )
-    if not(os.path.isdir):
+    if not(os.path.isdir(target_dir)):
         print ('Directory ' + str(target_dir) + ' does not exist.  Please double check the path and try again. ')
         sys.exit()
-
-    all_files = os.listdir(target_dir)
 
     overwrite = can.getUserInputWithDefault('Should I redo and overwrite previous calibration calculations (Master bias, master dark, wavelength solution, etc) (y, Y, yes, Yes, YES, or 1 for "yes"; default 0): ', '0')
     overwrite = (overwrite in ['y', 'Y', 'yes', 'Yes', 'YES', '1'])
@@ -105,19 +125,21 @@ if __name__ == "__main__":
         print ('We will NOT overwrite.')
 
     #bias_from_tonight = can.getUserInputWithDefault('Should I do determ (Master bias, master dark, wavelength solution, etc) (y, Y, yes, Yes, YES, or 1 for "yes"; default 0): ', '0')
-    bias_prefix, bias_imgs, bias_indeces = getListOfImages(all_files, 'Bias', 'Bias', data_image_suffix)
+    bias_prefix, bias_imgs, bias_indeces, bias_dir = getListOfImages(target_dir, dir_root, 'Bias', 'Bias', data_image_suffix, check_target_dir = 1)
+    print ('bias_dir = ' + str(bias_dir))
     if overwrite or not(os.path.exists(target_dir + master_bias_list)):
         can.saveListsToColumns(bias_imgs, master_bias_list, target_dir)
 
 
-    dark_prefix, dark_imgs, dark_indeces = getListOfImages(all_files, 'Dark', 'Dark', data_image_suffix)
+    dark_prefix, dark_imgs, dark_indeces, dark_dir = getListOfImages(target_dir, dir_root, 'Dark', 'Dark', data_image_suffix, check_target_dir = 1)
+    print ('dark_dir = ' + str(dark_dir)) # 2022_05_25
     if overwrite or not(os.path.exists(target_dir + master_dark_list)):
         can.saveListsToColumns(dark_imgs, master_dark_list, target_dir)
 
     do_wavelength_from_this_night = can.getUserInputWithDefault('Should we use a wavelength solution determined on THIS night? (y, Y, yes, Yes, YES, or 1 for "yes"; default 1): ', '1')
     do_wavelength_from_this_night = (do_wavelength_from_this_night in ['y', 'Y', 'yes', 'Yes', 'YES', '1'])
     if do_wavelength_from_this_night:
-        arc_lamp_prefix, arc_lamp_imgs, arc_lamp_indeces = getListOfImages(all_files, 'spectral calibration', 'HG2', data_image_suffix, select_all_images = 1)
+        arc_lamp_prefix, arc_lamp_imgs, arc_lamp_indeces, arc_lamp_dir = getListOfImages(target_dir, dir_root, 'spectral calibration', 'HG2', data_image_suffix, select_all_images = 1, check_target_dir = 0)
         master_arclamp_list = arc_lamp_prefix + ref_param_holder.getListSuffix()
         if overwrite or not(os.path.exists(target_dir + master_arclamp_list)):
              can.saveListsToColumns(arc_lamp_imgs, master_arclamp_list, target_dir)
@@ -127,7 +149,7 @@ if __name__ == "__main__":
         wavelength_correction_dir = dir_root + wavelength_night + '/'
         shutil.copy2(wavelength_correction_dir + ref_spec_solution_file, target_dir)
 
-    sky_prefix, sky_imgs, sky_indeces = getListOfImages(all_files, 'Sky', 'Sky', data_image_suffix)
+    sky_prefix, sky_imgs, sky_indeces, sky_dir = getListOfImages(target_dir, dir_root, 'Sky', 'Sky', data_image_suffix, check_target_dir = 0)
     dark_sky_start_index = int(can.getUserInputWithDefault('Enter first sky image number when sky was dark (used to identify sky lines, over sun continuum); default ' + str(sky_indeces[0]) + '): ', str(sky_indeces[0])))
     dark_sky_end_index = int(can.getUserInputWithDefault('Enter last sky image number when sky was dark (used to identify sky lines, over sun continuum); default ' + str(sky_indeces[-1]) + '): ', str(sky_indeces[-1])))
     focus_positions = [float(can.readInDataFromFitsFile(sky_img, target_dir)[1][ref_param_holder.getFocusKeyword()]) for sky_img in sky_imgs]
@@ -150,7 +172,7 @@ if __name__ == "__main__":
 
 
 
-    processor = prsc.SpectrumProcessor(target_dir, show_fits = 0, date = date_str.split('_'), ref_spec = arc_lamp_prefix, redo_master_bias = overwrite, redo_master_dark = overwrite)
+    processor = prsc.SpectrumProcessor(target_dir, show_fits = 0, date = date_str.split('_'), ref_spec = arc_lamp_prefix, redo_master_bias = overwrite, redo_master_dark = overwrite, bias_dir = bias_dir, dark_dir = dark_dir)
 
     redo_spectrum = overwrite
     if (redo_spectrum and len(arc_lamp_imgs) > 0) or not(os.path.isfile(target_dir + ref_spec_solution_file)):
@@ -181,7 +203,7 @@ if __name__ == "__main__":
         dark_sky_imgs = dark_sky_imgs_set[j]
         dark_sky_indeces = dark_sky_indeces_set[j]
         sky_indeces = sky_indeces_set[j]
-        processor = prsc.SpectrumProcessor(target_dir, show_fits = 0, date = date_str.split('_'), ref_spec = arc_lamp_prefix)
+        processor = prsc.SpectrumProcessor(target_dir, show_fits = 0, date = date_str.split('_'), ref_spec = arc_lamp_prefix, dark_dir = dark_dir, bias_dir = bias_dir)
 
         processor.pullCombinedSpectrumFromImages(dark_sky_imgs, analyze_spec_of_ind_images = 0, line_dict_id = None, plot_title = 'Stacked Spectrum', save_intermediate_images = 0, stacked_image_name = 'StackedSkyImage_img' + str(dark_sky_indeces[0]) + 'To' + str(dark_sky_indeces[-1]), apply_scatter_correction = 0, )
         for i in range(len(sky_imgs)):

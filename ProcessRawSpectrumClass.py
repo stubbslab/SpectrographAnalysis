@@ -281,7 +281,7 @@ class SpectrumProcessor:
         print (target_dir + master_bias_level_file)
         return 1
 
-    def biasSubtract(self, image_data, image_header, master_bias_image_file, master_bias_level_file):
+    def biasSubtract(self, image_data, image_header, master_bias_image_file, master_bias_level_file, bias_dir):
         """
         Subtracts the measured bias level (determined from the makeMasterBias command)
            from the image given by image_data. The 2d bias structure is determined by
@@ -290,8 +290,8 @@ class SpectrumProcessor:
            images, in time.
         """
         start_time_str = image_header[self.obs_time_keyword]
-        bias_structure_data, bias_header = can.readInDataFromFitsFile(master_bias_image_file, self.target_dir)
-        bias_levels = can.readInColumnsToList(master_bias_level_file, self.target_dir, n_ignore = 1, delimiter = ',', verbose = 0)
+        bias_structure_data, bias_header = can.readInDataFromFitsFile(master_bias_image_file, bias_dir)
+        bias_levels = can.readInColumnsToList(master_bias_level_file, bias_dir, n_ignore = 1, delimiter = ',', verbose = 0)
         bias_levels = [[float(start_time) for start_time in bias_levels[0]], [float(bias_level) for bias_level in bias_levels[1]]]
         bias_interp = scipy.interpolate.interp1d(bias_levels[0], bias_levels[1], bounds_error = False, fill_value = 'extrapolate')
         start_time_float = datetime.strptime(start_time_str, '%Y-%m-%dT%H:%M:%SZ').timestamp()
@@ -303,7 +303,7 @@ class SpectrumProcessor:
 
         return image_data, image_header
 
-    def darkSubtract(self, image_data, image_header, master_dark_file, exp_time_keyword = 'EXPTIME'):
+    def darkSubtract(self, image_data, image_header, master_dark_file, dark_dir, exp_time_keyword = 'EXPTIME'):
         """
         Subtract the 'dark' (meaning common mode) signal from an image. The
             dark data is produced using the makeMasterDark command.  The dark
@@ -311,7 +311,7 @@ class SpectrumProcessor:
             the provided header) and the dark exposure time (read from the)
             header of the master dark image.
         """
-        dark_data, dark_header = can.readInDataFromFitsFile(master_dark_file, self.target_dir)
+        dark_data, dark_header = can.readInDataFromFitsFile(master_dark_file, dark_dir)
         exp_time = float(image_header[exp_time_keyword])
         image_data = image_data - dark_data * exp_time
         image_header['DARKSUB'] = (str(datetime.utcnow() ), 'UTC of Dark subtraction')
@@ -348,7 +348,7 @@ class SpectrumProcessor:
         for i in range(len(dark_images)):
             dark_file = dark_images[i]
             single_dark_data, single_dark_header = can.readInDataFromFitsFile(dark_file, target_dir)
-            single_dark_data, single_dark_header = self.biasSubtract(single_dark_data, single_dark_header, master_bias_file, master_bias_level_file)
+            single_dark_data, single_dark_header = self.biasSubtract(single_dark_data, single_dark_header, master_bias_file, master_bias_level_file, self.bias_dir)
             exp_times[i] = float(single_dark_header['EXPTIME'])
             can.saveDataToFitsFile(np.transpose(single_dark_data), bias_sub_prefix + dark_file, target_dir, header = single_dark_header, overwrite = True, n_mosaic_extensions = 0)
             m_dark_header = single_dark_header
@@ -1868,34 +1868,34 @@ class SpectrumProcessor:
 
         #[OPTIONAL] Make master bias
         if do_bias or do_dark:
-            master_bias_exists = os.path.isfile(self.target_dir + self.master_bias_image_file)
+            master_bias_exists = os.path.isfile(self.bias_dir + self.master_bias_image_file)
             if not(master_bias_exists) or self.redo_master_bias:
                 print ('Making master bias files.  Will be saved to: ' )
-                print(self.target_dir + self.master_bias_image_file)
-                print(self.target_dir + self.master_bias_level_file)
-                master_bias_exists = self.makeMasterBias(self.master_bias_image_file, self.master_bias_level_file, self.target_dir)
+                print(self.bias_dir + self.master_bias_image_file)
+                print(self.bias_dir + self.master_bias_level_file)
+                master_bias_exists = self.makeMasterBias(self.master_bias_image_file, self.master_bias_level_file, self.bias_dir)
                 self.redo_master_bias = 0
             if not(master_bias_exists):
-                print ('Unable to find master bias file, ' + self.target_dir + self.master_bias_file + ', and also could not make it.  Returning without processing.')
-                #sys.exit()
+                print ('Unable to find master bias file, ' + self.bias_dir + self.master_bias_file + ', and also could not make it.  Returning without processing.')
+                return 0
 
         #[OPTIONAL] Make master dark
         if do_dark :
-            master_dark_exists = os.path.isfile(self.target_dir + self.master_dark_file)
+            master_dark_exists = os.path.isfile(self.dark_dir + self.master_dark_file)
             if not(master_dark_exists) or self.redo_master_dark:
-                print ('Making master dark file.  Will be saved to ' + self.target_dir + self.master_dark_file)
-                master_dark_exists = self.makeMasterDark(self.master_dark_file, self.target_dir, self.master_bias_image_file, self.master_bias_level_file, dark_list = self.master_dark_list)
+                print ('Making master dark file.  Will be saved to ' + self.dark_dir + self.master_dark_file)
+                master_dark_exists = self.makeMasterDark(self.master_dark_file, self.dark_dir, self.master_bias_image_file, self.master_bias_level_file, dark_list = self.master_dark_list)
                 self.redo_master_dark = 0
             if not(master_dark_exists):
-                print ('Unable to find master dark file, ' + self.target_dir + self.master_dark_file + ', and also could not make it.  Returning without processing.')
+                print ('Unable to find master dark file, ' + self.dark_dir + self.master_dark_file + ', and also could not make it.  Returning without processing.')
                 #sys.exit()
 
         #Bias and dark subtract
         for i in range(len(spec_files_to_reduce)):
             if do_bias or do_dark:
-                self.current_images[i], self.current_headers[i] = self.biasSubtract(self.current_images[i], self.current_headers[i], self.master_bias_image_file, self.master_bias_level_file)
+                self.current_images[i], self.current_headers[i] = self.biasSubtract(self.current_images[i], self.current_headers[i], self.master_bias_image_file, self.master_bias_level_file, self.bias_dir)
             if do_dark:
-                self.current_images[i], self.current_headers[i] = self.darkSubtract(self.current_images[i], self.current_headers[i], self.master_dark_file)
+                self.current_images[i], self.current_headers[i] = self.darkSubtract(self.current_images[i], self.current_headers[i], self.master_dark_file, self.dark_dir)
 
         exp_times = [float(header[self.fits_exp_time_keyword]) for header in self.current_headers]
         self.current_images = [ self.current_images[i] / exp_times[i] for i in range(len(self.current_images)) ]
@@ -2541,10 +2541,15 @@ class SpectrumProcessor:
                                    identified_full_emission_line_centers, identified_full_emission_line_heights, identified_full_emission_line_floors, self.wavelength_of_mu_solution,
                                    self.show_fits, self.save_final_plot, plot_title = 'Spectrum of image: ' + str(line_dict_id), noise_bin_width = self.pix_bin_to_meas_background_noise,
                                    save_image_name = image_to_measure[:-len(self.data_image_suffix)] +  self.processed_spectra_image_suffix + self.figure_suffix)
+        if self.save_spectra:
+            self.saveFullSpectrum(self.parallel_spec_wavelengths[pix_target_range[0]:pix_target_range[1]], self.full_pix_spectrum[pix_target_range[0]:pix_target_range[1]], self.full_pix_background_stats[pix_target_range[0]:pix_target_range[1]],
+                                  data_save_name = image_to_measure[:-len(self.data_image_suffix)] +  self.processed_spectra_image_suffix + self.text_suffix)
+            self.saveFullSpectrumWithSteps(self.parallel_spec_wavelengths[pix_target_range[0]:pix_target_range[1]], self.no_background_sub_full_pix_spectrum[pix_target_range[0]:pix_target_range[1]], self.full_pix_background_stats[pix_target_range[0]:pix_target_range[1]], self.continuum_interp, self.full_pix_spectrum[pix_target_range[0]:pix_target_range[1]],
+                                           data_save_name = image_to_measure[:-len(self.data_image_suffix)] + self.processed_multistep_spectra_image_suffix  + self.text_suffix)
         return 1
 
 
-    def plotLineProfilesInTime(self, n_subplots = 8, n_cols = 2, figsize = (8,16), line_variation_image_name = 'skyLineChangesOverTime.pdf', n_legend_col = 2, legend_text_size = 8, n_ticks = 11, xlabel = r'$\Delta t$ since first exp. (min)', ylabel ='Fitted height of line (ADU)' , y_lims = [-0.05, 1.05], line_legend_n_sig_figs = 4):
+    def plotLineProfilesInTime(self, n_subplots = 8, n_cols = 2, figsize = (8,16), line_variation_image_name = 'skyLineChangesOverTime.pdf', n_legend_col = 2, legend_text_size = 8, n_ticks = 11, xlabel = r'$\Delta t$ since first exp. (min)', ylabel ='Fitted volume of line (Ry)' , y_lims = [-0.05, 1.05], line_legend_n_sig_figs = 4):
         """
         This function plots the intensities of identified lines in time.  This
            function should be run AFTER all images have been reduced, as it
@@ -2574,21 +2579,25 @@ class SpectrumProcessor:
         delta_ts = [(time - min_time) / 60 for time in timestamps]
 
         max_height = 0.0
+        max_volume = 0.0
         for i in range(len(line_numbers)):
              plot_number = [j for j in range(len(n_lines_per_plot)) if i < line_numbers_by_plot[1:][j]] [0]
              line_number = line_numbers[i]
              line_heights = [self.identified_lines_dict[key][self.lines_in_dict_keyword][line_number][0] for key in self.identified_lines_dict.keys()]
+             line_sigmas = [self.identified_lines_dict[key][self.lines_in_dict_keyword][line_number][2] for key in self.identified_lines_dict.keys()]
+             line_volumes = np.sqrt(2.0 * np.pi * line_sigmas ** 2.0) * line_heights
              max_height = np.max(line_heights + [max_height])
+             max_volume = np.max(line_volumes + [max_volume])
              #y_lims = [min([y_lims[0]] + line_heights), max([y_lims[1]] + line_heights) ]
              image_numbers = [key for key in self.identified_lines_dict.keys()]
              #single_lines[plot_number] = single_lines[plot_number] + [axarr[plot_number // 2, plot_number % 2].plot(image_numbers[1:], line_heights[1:])[0] ]
-             single_lines[plot_number] = single_lines[plot_number] + [axarr[plot_number // 2, plot_number % 2].plot(delta_ts[1:], line_heights[1:])[0] ]
+             single_lines[plot_number] = single_lines[plot_number] + [axarr[plot_number // 2, plot_number % 2].plot(delta_ts[1:], line_volumes[1:])[0] ]
 
         for i in range(n_subplots):
              print ('Making subplot ' + str(i + 1) + ' of ' + str(n_subplots))
              line_identifiers = ['L' + str(line_number) + ': ' + str(can.round_to_n(self.wavelength_of_mu_solution(self.identified_lines_dict[self.stacked_image_keyword][self.lines_in_dict_keyword][line_number][1]), line_legend_n_sig_figs )) + 'nm' for line_number in line_numbers[line_numbers_by_plot[i]:line_numbers_by_plot[i+1]] ]
              axarr[ i // 2, i % 2].legend(single_lines[i], line_identifiers, ncol = n_legend_col, prop={'size':legend_text_size} )
-             axarr[ i // 2, i % 2].set_ylim([-0.01 * max_height, max_height ])
+             axarr[ i // 2, i % 2].set_ylim([-0.01 * max_volume, max_volume ])
              if i // 2 == n_subplots // 2 -1 :
                   axarr[ i // 2, i % 2].set_xlabel(xlabel )
              if i % 2 == 0:
@@ -2602,7 +2611,7 @@ class SpectrumProcessor:
 
     def plotScaledLineProfilesInTime(self, n_cols = 4, fig_v_elem = 0.75, fig_h_elem = 2,
                                      line_variation_image_name = 'skyLineChangesOverTimeScaled.pdf', line_variation_catalogue_name = 'skyLineChangesOverTime.lcat', cat_delimiter = ', ',
-                                     line_id_text_size = 8, xlabel = r'$\Delta t$ since first exp. (min)', ylabel ='Fitted height of line (ADU)' ,
+                                     line_id_text_size = 8, xlabel = r'$\Delta t$ since first exp. (min)', ylabel ='Fitted volumes of line (Ry)' ,
                                      line_box_buffer = 0.1, text_buffer_left = 0.03, text_top_buffer = 0.03, n_time_ticks = 5, n_std_to_show = 3,
                                       cmap_buffer = 0.03, cmap_bottom = 0.05, cmap_width = 0.02, cmap_height = 0.9, cbar_label = 'Line height above continuum',
                                       y_lims = [-0.05, 1.05], line_text_n_sig_figs = 4, line_legend_n_sig_figs = 4, labelsize = 10, title_size = 14, col_sep = 0.0,
@@ -2693,6 +2702,7 @@ class SpectrumProcessor:
         #gs = gridspec.GridSpec(ncols=n_cols * plot_elem_to_cbar_width_ratio, nrows=max_n_lines_per_col, figure=f)
         plt.subplots_adjust(wspace=col_sep, hspace=0)
         all_line_heights = [[self.identified_lines_dict[key][self.lines_in_dict_keyword][line_number][0] for key in spectra_ids] for line_number in line_numbers]
+        all_line_sigmas = [[self.identified_lines_dict[key][self.lines_in_dict_keyword][line_number][2] for key in spectra_ids] for line_number in line_numbers]
         all_line_min, all_line_max, all_line_mean, all_line_std = [np.min(all_line_heights), np.max(all_line_heights), np.mean(all_line_heights), np.std(all_line_heights)]
         line_color_min, line_color_max = [max(all_line_mean - n_std_color_lims * all_line_std, 0.0), all_line_mean + n_std_color_lims * all_line_std]
         line_color_scaling_funct = lambda line_heights: (line_heights  - line_color_min) / (line_color_max - line_color_min)
@@ -2718,9 +2728,10 @@ class SpectrumProcessor:
              all_axes[col_num] = all_axes[col_num] + [ax]
              line_number = line_numbers[i]
              line_heights = np.array(all_line_heights[i] )
-             line_heights = line_heights
-             line_table_to_save = line_table_to_save + [line_heights]
-             line_median, line_std = [np.median(line_heights), np.std(line_heights)]
+             line_sigmas = np.array(all_line_sigmas[i])
+             line_volumes = np.sqrt(2.0 * np.pi * line_sigmas ** 2.0) * line_heights
+             line_table_to_save = line_table_to_save + [line_volumes]
+             line_median, line_std = [np.median(line_volumes), np.std(line_volumes)]
              #line_heights = [self.identified_lines_dict[key][self.lines_in_dict_keyword][line_number][0] for key in self.identified_lines_dict.keys()]
              line_min, line_max = [0.0, line_median + n_std_to_show * line_std]
              #line_box_bounds = [artificial_row_num / max_n_lines_per_col, (artificial_row_num + 1) / max_n_lines_per_col - line_box_buffer / max_n_lines_per_col ]
@@ -2728,10 +2739,10 @@ class SpectrumProcessor:
              #yticks_set[plot_number] = yticks_set[plot_number] + [(line_box_bounds[1] + line_box_bounds[0]) / 2.0]
              #yticklabels_set[plot_number] = yticklabels_set[plot_number] + [line_identifiers[i]]
              on_plot_text = ax.text((delta_ts[-1] - delta_ts[0]) * text_buffer_left, 1 - text_top_buffer, line_identifiers[i], fontsize = labelsize, verticalalignment = 'top' )
-             scaled_line_heights = np.array([line_box_bounds[0] + (line_box_bounds[1] - line_box_bounds[0]) * (height - line_min) / (line_max - line_min) for height in line_heights ])
-             line_segment_middles = np.array([(line_heights[i] + line_heights[i+1]) / 2.0 for i in range(1, len(line_heights) - 1)])
+             scaled_line_volumes = np.array([line_box_bounds[0] + (line_box_bounds[1] - line_box_bounds[0]) * (height - line_min) / (line_max - line_min) for height in line_volumes ])
+             line_segment_middles = np.array([(line_volumes[i] + line_volumes[i+1]) / 2.0 for i in range(1, len(line_volumes) - 1)])
              line_color_coefs = line_color_scaling_funct(line_segment_middles)
-             xs, ys = delta_ts[1:], scaled_line_heights[1:]
+             xs, ys = delta_ts[1:], scaled_line_volumes[1:]
              points = np.array([xs, ys]).T.reshape(-1, 1, 2)
              segments = np.concatenate([points[:-1], points[1:]], axis=1)
              colors = cmap(line_color_coefs)
@@ -2802,6 +2813,22 @@ class SpectrumProcessor:
         return 1
 
 
+    def saveFullSpectrum(self, parallel_spec_wavelengths, full_pix_spectrum, spectrum_statistics_slice,
+                          data_save_name = 'NO_NAME_SAVED_FIGURE_OF_OSELOTS_LINES.txt', save_dir = None,
+                          header = 'Wavelength (nm), ' + r'Spectrum Radiance (Ry nm$^{-1}$), ' + r'Background Radiance (Ry nm$^{-1}$), '):
+        """
+        Saves a data file of the measured spectrum, in true sky units
+            (Rayleigh/nm vs wavelength) and the identified sky lines.
+            The measured radiance of the backgrond (subject to the
+            same processing steps as the main spectrum) is provided
+            as a source of statistical uncertainty.
+        """
+        if save_dir == None:
+            save_dir = self.target_dir
+        can.saveListsToColumns([parallel_spec_wavelengths, full_pix_spectrum, spectrum_statistics_slice], data_save_name, save_dir, sep = ', ', header = header)
+        return 1
+
+
     def plotFullLineImage(self, parallel_spec_wavelengths, full_pix_spectrum, spectrum_statistics_slice,
                                 full_emission_line_centers, full_emission_heights, full_emission_floors, wavelength_of_mu_solution,
                                 show_fits, save_final_plot,
@@ -2862,13 +2889,38 @@ class SpectrumProcessor:
         plt.close('all')
         return 1
 
+    def saveFullSpectrumWithSteps(self, parallel_spec_wavelengths, no_background_sub_full_pix_spectrum, full_pix_background_stats, continuum_interp, full_pix_spectrum,
+                                  data_save_name = 'NO_NAME_SAVED_FIGURE_OF_OSELOTS_LINES.txt', save_dir = None,
+                                  header = 'Wavelength (nm), ' + 'Continuum-Subtracted Spectrum Radiance (Ry/nm), ' + 'Background Radiance (Ry/nm), ' + 'Spectrum before throughput (ADU), ' + 'Sky spectrum pre-continuum subtraction (Ry/nm), ' + ' Throughput (Ry/ADU), ' + ' Splined Continuum(Ry/nm)'):
+        """
+        Saves a data file of the measured spectrum, in true sky units (Rayleigh/nm
+            vs wavelength) and the identified sky lines.  Also listed are
+            some steps in the data reduction process.  Also listed are the
+            statistics of the background (region with no spectrum), subject to the
+            same reduction process.
+        """
+        if save_dir == None:
+            save_dir = self.target_dir
+
+        interped_throughput = self.throughput_interp(parallel_spec_wavelengths)
+        pre_throughput_spec = no_background_sub_full_pix_spectrum / interped_throughput
+        continuum_estimate = continuum_interp(parallel_spec_wavelengths)
+        data_to_save = [parallel_spec_wavelengths, full_pix_spectrum, full_pix_background_stats, pre_throughput_spec, no_background_sub_full_pix_spectrum, interped_throughput, continuum_estimate]
+        can.saveListsToColumns(data_to_save, data_save_name, save_dir, sep = ', ', header = header)
+
+
+        return 1
+
+
+
     def plotFullAnalysisStepImage(self, parallel_spec_wavelengths, no_background_sub_full_pix_spectrum, full_pix_background_stats, continuum_interp, full_pix_spectrum,
                                 full_emission_line_centers, full_emission_heights, full_emission_floors, continuum_fit_points, wavelength_of_mu_solution,
                                 show_fits, save_final_plot, xlabel = 'Sky wavelength (nm)', ylabel = 'Relative intensity (normalized)', plot_title = None, xticks = np.arange(400, 1301, 100),
                                 xlims = None, ylims = None, save_image_name = 'NO_NAME_SAVED_FIGURE_OF_OSELOTS_LINES.txt', legend_pos = [[0.1, 0.75], 'center left']):
         """
         Saves a plot of the measured spectrum, in true sky units (Rayleigh/nm
-            vs wavelength) and the identified sky lines.  This command requires
+            vs wavelength) and the identified sky lines.  Also plotted are
+            various steps in the data reduction process. This command requires
             that all of the data to be plotted (spectrum, lines) be passed as
             arguments.
         """
@@ -2882,7 +2934,7 @@ class SpectrumProcessor:
         #background_spec = plt.plot(parallel_spec_wavelengths, full_pix_background_stats, c = 'red', zorder = -2)[0]
         interped_throughput = self.throughput_interp(parallel_spec_wavelengths)
         pre_throughput_spec = plt.plot(parallel_spec_wavelengths, no_background_sub_full_pix_spectrum / interped_throughput / np.max(no_background_sub_full_pix_spectrum / interped_throughput), c = 'purple', zorder = -2)[0]
-        continuum_estimate = plt.plot(parallel_spec_wavelengths, continuum_interp(parallel_spec_wavelengths) / np.max(np.max(no_background_sub_full_pix_spectrum)), c = 'green', zorder = 0, linestyle = '--')[0]
+        continuum_estimate = plt.plot(parallel_spec_wavelengths, continuum_interp(parallel_spec_wavelengths) / np.max(np.max(no_background_sub_full_pix_spectrum / interped_throughput)), c = 'green', zorder = 0, linestyle = '--')[0]
         background_sub_spec = plt.plot(parallel_spec_wavelengths, full_pix_spectrum / np.max(full_pix_spectrum), c = 'k', zorder = 2)[0]
         identified_lines = plt.scatter([wavelength_of_mu_solution(center) for center in full_emission_line_centers], (np.array(full_emission_heights) + np.array(full_emission_floors)) / np.max(full_pix_spectrum), marker = 'x', c = 'orange', zorder = 3)
         continuum_sampling_points = plt.scatter(continuum_fit_points[0], np.array(continuum_fit_points[1]) / np.max(no_background_sub_full_pix_spectrum), marker = 'o', color = 'green', zorder = 1)
@@ -2981,6 +3033,13 @@ class SpectrumProcessor:
                                     self.identified_full_emission_line_centers, full_emission_heights, full_emission_floors, self.wavelength_of_mu_solution,
                                     self.show_fits, self.save_final_plot, plot_title = plot_title, noise_bin_width = self.pix_bin_to_meas_background_noise,
                                     save_image_name = stacked_image_name  + self.processed_spectra_image_suffix + self.figure_suffix)
+
+        if self.save_spectra:
+            self.saveFullSpectrum(self.parallel_spec_wavelengths[pix_target_range[0]:pix_target_range[1]], self.full_pix_spectrum[pix_target_range[0]:pix_target_range[1]], self.full_pix_background_stats[pix_target_range[0]:pix_target_range[1]],
+                                  data_save_name = stacked_image_name  + self.processed_spectra_image_suffix + self.text_suffix)
+            self.saveFullSpectrumWithSteps(self.parallel_spec_wavelengths[pix_target_range[0]:pix_target_range[1]], self.no_background_sub_full_pix_spectrum[pix_target_range[0]:pix_target_range[1]], self.full_pix_background_stats[pix_target_range[0]:pix_target_range[1]], self.continuum_interp, self.full_pix_spectrum[pix_target_range[0]:pix_target_range[1]],
+                                           data_save_name = stacked_image_name  + self.processed_multistep_spectra_image_suffix + self.text_suffix)
+
         return 1
 
     def loadSpecProcessor(self, load_name, load_dir = None):
@@ -3228,9 +3287,10 @@ class SpectrumProcessor:
         return 1
 
 
-    def __init__(self, target_dir, master_bias_prefix = 'BIAS', master_dark_prefix = 'DARK', ref_spec = 'KR1',
+    def __init__(self, target_dir,
+                 master_bias_prefix = 'BIAS', master_dark_prefix = 'DARK', ref_spec = 'KR1', bias_dir = None, dark_dir = None,
                  processed_file_suffix = '_proc', processed_spectra_image_suffix = '_spec', perp_spec_image_suffix = '_perp_spec', processed_prefix = 'proc_',
-                 data_image_suffix = '.fits', save_image_suffix = '.pdf', list_suffix = '.list', sig_clip_for_line_width = 3.5, save_stacked_image = 1,
+                 data_image_suffix = '.fits', save_image_suffix = '.pdf', list_suffix = '.list', sig_clip_for_line_width = 3.5, save_stacked_image = 1, save_spectra = 1,
                  crc_correct = 1, do_bias = 1, do_dark = 1, redo_master_bias = 0, redo_master_dark = 0, cosmic_prefix = 'crc_', show_fits = 1, save_final_plot = 1, save_perp_spec_image = 1, spec_axis = 0,
                  background_buffer = 10, background_size = 100, background_low = 1, n_std_for_strong_line = 20.0, n_std_for_full_line = 10.0,
                  archival_data_dir = '/Users/sashabrownsberger/Documents/Harvard/physics/stubbs/skySpectrograph/calibrationDataFiles/',
@@ -3263,6 +3323,7 @@ class SpectrumProcessor:
         self.redo_master_dark = redo_master_dark
         self.ref_spec = ref_spec
         self.show_fits = show_fits
+        self.save_spectra = save_spectra
         self.crc_correct = crc_correct
         self.save_perp_spec_image = save_perp_spec_image
         self.save_stacked_image = save_stacked_image
@@ -3282,6 +3343,15 @@ class SpectrumProcessor:
         #spec_files = spec_files.replace(']','')
         #spec_files = spec_files.split(',')
         self.target_dir = target_dir
+        if bias_dir == None:
+            self.bias_dir = self.target_dir
+        else:
+            self.bias_dir = bias_dir
+        if dark_dir == None:
+            self.dark_dir = self.target_dir
+        else:
+            self.dark_dir = dark_dir
+        print ('self.dark_dir = ' + str(self.dark_dir))
         self.seeing_fit_params = np.zeros(self.seeing_fit_order + 1)
         self.seeing_fit_params[-1] = self.init_seeing_guess
         self.seeing_fit_funct = np.poly1d(self.seeing_fit_params)
@@ -3341,6 +3411,7 @@ if __name__ == "__main__":
     #all_sky_imgs = [ 'Mono_' + str(800) + 'nm_f' + focus_str + '_' + '_'.join(date) + '_' + str(j) + '.fits' for j in all_sky_nums ]
 
     processor.pullCombinedSpectrumFromImages(dark_sky_imgs, show_fits = None, analyze_spec_of_ind_images = 1, line_dict_id = None, plot_title = 'Stacked Spectrum', save_intermediate_images = 0, stacked_image_name = 'StackedSkyImage_img' + str(dark_sky_nums[0]) + 'To' + str(dark_sky_nums[-1]), apply_scatter_correction = scatter_correct)
+    processor.saveSpe
     for i in range(len(sky_imgs)):
         img = sky_imgs[i]
         img_num = sky_nums[i]
