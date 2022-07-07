@@ -221,7 +221,7 @@ if __name__ == "__main__":
         print ('You can reload the saved spectrum processor using the following (in the Python environment): ')
         print ('import ProcessRawSpectrumClass as prsc')
         print ("date_str = '" + str(date_str) + "'")
-        print ("ref_dir_root = '" + dir_root + "'")
+        print ("ref_dir_root = '" + root_dir + "'")
         print ("target_dir = '" + target_dir + "'" )
         print ('processor_reloaded = prsc.SpectrumProcessor(ref_dir_root, target_dir, show_fits = 0)')
         print ("processor_python_obj_save_file = '" +   str(processor_python_obj_save_file) + "'" )
