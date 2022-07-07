@@ -3306,11 +3306,14 @@ class SpectrumProcessor:
                  data_image_suffix = '.fits', save_image_suffix = '.pdf', list_suffix = '.list', sig_clip_for_line_width = 3.5, save_stacked_image = 1, save_spectra = 1,
                  crc_correct = 1, do_bias = 1, do_dark = 1, redo_master_bias = 0, redo_master_dark = 0, cosmic_prefix = 'crc_', show_fits = 1, save_final_plot = 1, save_perp_spec_image = 1, spec_axis = 0,
                  background_buffer = 10, background_size = 100, background_low = 1, n_std_for_strong_line = 20.0, n_std_for_full_line = 10.0,
-                 archival_data_dir = '/Users/sashabrownsberger/Documents/Harvard/physics/stubbs/skySpectrograph/calibrationDataFiles/',
-                 ref_params_file = 'OSELOTSDefaults.txt', ref_params_dir = '/Users/sashabrownsberger/Documents/sashas_python_scripts/skySpectrograph/',
-                 scatter_data_dir = '/Users/sashabrownsberger/Documents/Harvard/physics/stubbs/skySpectrograph/data/ut20211210/', scatter_data_key_file = 'scatter_map_Mono_2021_12_10.txt',
+                 archival_data_subdir = 'calibrationDataFiles/', ref_params_subdir = '', scatter_data_subdir = 'data/ut20211210/'
+                 ref_params_file = 'OSELOTSDefaults.txt',
+            , scatter_data_key_file = 'scatter_map_Mono_2021_12_10.txt',
                  remove_intermed_images = 1, stacked_image_name_root = None, date = None, throughput_file = None):
 
+        archival_data_dir = target_dir + archival_data_subdir
+        ref_params_dir = target_dir + ref_params_subdir
+        scatter_data_dir = target_dir + scatter_data_subdir
         self.date = date
 
         self.ref_param_holder = ref_param.CommandHolder(spectrograph_file = ref_params_file, defaults_dir = ref_params_dir)

@@ -173,7 +173,7 @@ if __name__ == "__main__":
 
 
 
-    processor = prsc.SpectrumProcessor(target_dir, show_fits = 0, date = date_str.split('_'), ref_spec = arc_lamp_prefix, redo_master_bias = overwrite, redo_master_dark = overwrite, bias_dir = bias_dir, dark_dir = dark_dir)
+    processor = prsc.SpectrumProcessor(target_dir, show_fits = 0, date = date_str.split('_'), ref_spec = arc_lamp_prefix, redo_master_bias = overwrite, redo_master_dark = overwrite, bias_dir = bias_dir, dark_dir = dark_dir )
 
     redo_spectrum = overwrite
     if (redo_spectrum and len(arc_lamp_imgs) > 0) or not(os.path.isfile(target_dir + ref_spec_solution_file)):
