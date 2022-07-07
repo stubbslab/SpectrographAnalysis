@@ -94,13 +94,15 @@ if __name__ == "__main__":
     date_str = sys_args[0]
 
     #NEW USER: UPDATE THIS VARIABLE!!!!
-    dir_root = '/Users/sashabrownsberger/Documents/Harvard/physics/stubbs/skySpectrograph/data/'
+    root_dir = '/Users/sashabrownsberger/Documents/Harvard/physics/stubbs/skySpectrograph/data/'
+    data_subdir = 'data/'
+    data_dir = root_dir + data_subdir
 
     if len(date_str) != 10:
         print ('Did not get properly formatted date for the night to analyze.  I expect a date formatted like: YYYY_MM_DD, passed as 1st argument.')
         sys.exit()
 
-    ref_param_holder = ref_param.CommandHolder(spectrograph_file = 'OSELOTSDefaults.txt', defaults_dir = '/Users/sashabrownsberger/Documents/sashas_python_scripts/skySpectrograph/')
+    ref_param_holder = ref_param.CommandHolder(spectrograph_file = 'OSELOTSDefaults.txt', defaults_dir = root_dir)
     ref_spec_solution_file = ref_param_holder.getRefSpecSolutionFile()
 
 
@@ -108,8 +110,7 @@ if __name__ == "__main__":
     master_bias_list = ref_param_holder.getBiasList()
     master_dark_list = ref_param_holder.getDarkList()
 
-    dir_root = '/Users/sashabrownsberger/Documents/Harvard/physics/stubbs/skySpectrograph/data/'
-    target_dir = dir_root + date_str + '/'
+    target_dir = data_dir + date_str + '/'
     get_new_target_dir = can.getUserInputWithDefault('I am going to analyze data in this directory: ' + target_dir + '  Is that okay (y, Y, yes, Yes, YES, or 1 for "yes"; default 1): ', '1')
     if not(get_new_target_dir in ['y', 'Y', 'yes', 'Yes', 'YES', '1']):
         target_dir = input('Please enter the FULL PATH to the directory with the night of data you would like to analyze: ' )
@@ -125,13 +126,13 @@ if __name__ == "__main__":
         print ('We will NOT overwrite.')
 
     #bias_from_tonight = can.getUserInputWithDefault('Should I do determ (Master bias, master dark, wavelength solution, etc) (y, Y, yes, Yes, YES, or 1 for "yes"; default 0): ', '0')
-    bias_prefix, bias_imgs, bias_indeces, bias_dir = getListOfImages(target_dir, dir_root, 'Bias', 'Bias', data_image_suffix, check_target_dir = 1)
+    bias_prefix, bias_imgs, bias_indeces, bias_dir = getListOfImages(target_dir, data_dir, 'Bias', 'Bias', data_image_suffix, check_target_dir = 1)
     print ('bias_dir = ' + str(bias_dir))
     if overwrite or not(os.path.exists(target_dir + master_bias_list)):
         can.saveListsToColumns(bias_imgs, master_bias_list, target_dir)
 
 
-    dark_prefix, dark_imgs, dark_indeces, dark_dir = getListOfImages(target_dir, dir_root, 'Dark', 'Dark', data_image_suffix, check_target_dir = 1)
+    dark_prefix, dark_imgs, dark_indeces, dark_dir = getListOfImages(target_dir, data_dir, 'Dark', 'Dark', data_image_suffix, check_target_dir = 1)
     print ('dark_dir = ' + str(dark_dir)) # 2022_05_25
     if overwrite or not(os.path.exists(target_dir + master_dark_list)):
         can.saveListsToColumns(dark_imgs, master_dark_list, target_dir)
@@ -139,17 +140,17 @@ if __name__ == "__main__":
     do_wavelength_from_this_night = can.getUserInputWithDefault('Should we use a wavelength solution determined on THIS night? (y, Y, yes, Yes, YES, or 1 for "yes"; default 1): ', '1')
     do_wavelength_from_this_night = (do_wavelength_from_this_night in ['y', 'Y', 'yes', 'Yes', 'YES', '1'])
     if do_wavelength_from_this_night:
-        arc_lamp_prefix, arc_lamp_imgs, arc_lamp_indeces, arc_lamp_dir = getListOfImages(target_dir, dir_root, 'spectral calibration', 'HG2', data_image_suffix, select_all_images = 1, check_target_dir = 0)
+        arc_lamp_prefix, arc_lamp_imgs, arc_lamp_indeces, arc_lamp_dir = getListOfImages(target_dir, data_dir, 'spectral calibration', 'HG2', data_image_suffix, select_all_images = 1, check_target_dir = 0)
         master_arclamp_list = arc_lamp_prefix + ref_param_holder.getListSuffix()
         if overwrite or not(os.path.exists(target_dir + master_arclamp_list)):
              can.saveListsToColumns(arc_lamp_imgs, master_arclamp_list, target_dir)
     else:
         arc_lamp_prefix = None
         wavelength_night = can.getUserInputWithDefault('Enter the date string for the night from which we should correct the data (formatted as YYYY_MM_DD; default ' + date_str + '): ', 'date_str')
-        wavelength_correction_dir = dir_root + wavelength_night + '/'
+        wavelength_correction_dir = data_dir + wavelength_night + '/'
         shutil.copy2(wavelength_correction_dir + ref_spec_solution_file, target_dir)
 
-    sky_prefix, sky_imgs, sky_indeces, sky_dir = getListOfImages(target_dir, dir_root, 'Sky', 'Sky', data_image_suffix, check_target_dir = 0)
+    sky_prefix, sky_imgs, sky_indeces, sky_dir = getListOfImages(target_dir, data_dir, 'Sky', 'Sky', data_image_suffix, check_target_dir = 0)
     dark_sky_start_index = int(can.getUserInputWithDefault('Enter first sky image number when sky was dark (used to identify sky lines, over sun continuum); default ' + str(sky_indeces[0]) + '): ', str(sky_indeces[0])))
     dark_sky_end_index = int(can.getUserInputWithDefault('Enter last sky image number when sky was dark (used to identify sky lines, over sun continuum); default ' + str(sky_indeces[-1]) + '): ', str(sky_indeces[-1])))
     focus_positions = [float(can.readInDataFromFitsFile(sky_img, target_dir)[1][ref_param_holder.getFocusKeyword()]) for sky_img in sky_imgs]

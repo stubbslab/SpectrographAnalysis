@@ -171,7 +171,7 @@ def doOrthogonalLinearFit(xs, ys, x_errs = None, y_errs = None, init_guess = Non
 # RA goes from 0 to 360, Dec goes from -90 to 90.
 # Function does necessary corrections
 def plotStarsOnSky(ras, decs, fig = None, fig_indeces = 111, color = 'k', figsize = [10, 8], add_colorbar = 0, cbar_label = '', marker = '*',
-                    plot_dir = '/Users/sashabrownsberger/Documents/', file_name = 'starsOnSky.pd', show_fig = 1, save_fig = 0):
+                    plot_dir = None, file_name = 'starsOnSky.pd', show_fig = 1, save_fig = 0):
     """
     Make an "aitoff" style plot of RA and Decs (both given in degrees!) on the sky.
          (some) Parameters
@@ -189,6 +189,8 @@ def plotStarsOnSky(ras, decs, fig = None, fig_indeces = 111, color = 'k', figsiz
          -------
          out : None
     """
+    if plot_dir == None:
+        plot_dir = self.target_dir 
     astro_arch = apa.AstronomicalParameterArchive()
     deg_to_rad = astro_arch.getDegToRad()
 
