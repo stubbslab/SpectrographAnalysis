@@ -22,6 +22,7 @@ if __name__=="__main__":
 
     #Process bias data
     mono_bias_indeces = can.flattenListOfLists([[ start_index + i * 3 , start_index + i * 3 + 2] for i in range(len(wavelengths)) ])
+
     redo_bias = 0
     master_bias_image_file = 'BIAS.fits'
     master_bias_level_file = 'BIAS.txt'
@@ -73,11 +74,16 @@ if __name__=="__main__":
     #Count up the flux from the region of the image.
     box_width = 30
     height_padding = 5
+    height_buffer = 10
+    width_buffer = 20
     bg_box_width_ext = 20
     bg_box_height_ext = 30
     regions = [ [ [pix_center - box_width // 2, pix_center + box_width // 2], [int(processor.spec_range[0]) - height_padding, int(processor.spec_range[1]) + height_padding] ] for pix_center in expected_pix_centers]
-    bg_regions = [ [[pix_center - box_width // 2 - bg_box_width_ext // 2, pix_center + box_width // 2 + bg_box_width_ext // 2],
-                   [int(processor.spec_range[0]) - height_padding - bg_box_height_ext // 2, int(processor.spec_range[1]) + height_padding + bg_box_height_ext // 2 ]] for pix_center in expected_pix_centers]
+    buffer_regions = [ [[pix_center - box_width // 2 - width_buffer, pix_center + box_width // 2 + width_buffer],
+                   [int(processor.spec_range[0]) - height_padding - height_buffer, int(processor.spec_range[1]) + height_padding + height_buffer ]] for pix_center in expected_pix_centers]
+    bg_regions = [ [[pix_center - box_width // 2 - width_buffer - bg_box_width_ext // 2, pix_center + box_width // 2 + width_buffer + bg_box_width_ext // 2],
+                   [int(processor.spec_range[0]) - height_padding - height_buffer - bg_box_height_ext // 2, int(processor.spec_range[1]) + height_padding + height_buffer + bg_box_height_ext // 2 ]] for pix_center in expected_pix_centers]
+
 
     region_area = box_width
     bg_region_area = - region_area
@@ -86,6 +92,7 @@ if __name__=="__main__":
     ADU_rate_uncertainties = []
     for i in range(len(processed_mono_images)):
         region = regions[i]
+        buffer_region = buffer_regions[i]
         bg_region = bg_regions[i]
         image_data, header = can.readInDataFromFitsFile(processed_mono_images[i], target_dir)
         exp_time = float(header['EXPTIME'])
@@ -101,18 +108,18 @@ if __name__=="__main__":
         except RuntimeError:
             box_peak = max_snip_col
         peak_cols = peak_cols + [box_peak + bg_region[0][0]]
+        buffer_snip = image_data[buffer_region[1][0]:buffer_region[1][1], buffer_region[0][0]:buffer_region[0][1]]
         bg_snip = image_data[bg_region[1][0]:bg_region[1][1], bg_region[0][0]:bg_region[0][1]]
         counts_in_image = np.sum(data_snip)
-        bg_counts_in_image = np.sum(bg_snip) - counts_in_image
+        counts_in_buffer = np.sum(buffer_snip)
+        bg_counts_in_image = np.sum(bg_snip) - counts_in_buffer
         region_area = np.shape(data_snip)[0] * np.shape(data_snip)[1]
-        bg_region_area = np.shape(bg_snip)[0] * np.shape(bg_snip)[1] - region_area
+        buffer_area = np.shape(buffer_snip)[0] * np.shape(buffer_snip)[1]
+        bg_region_area = np.shape(bg_snip)[0] * np.shape(bg_snip)[1] - buffer_area
         ADU_rates = ADU_rates + [(counts_in_image - region_area * bg_counts_in_image / bg_region_area) / exp_time]
         ADU_rate_uncertainties = [ np.sqrt(np.abs(counts_in_image) + (region_area / bg_region_area) ** 2.0 * np.abs(bg_counts_in_image)) / np.sqrt(2) ]
 
-    print ('peak_cols = ' + str(peak_cols))
     peak_wavelengths = [can.round_to_n(processor.wavelength_of_mu_solution(col), 6) for col in peak_cols]
-    print ('peak_wavelengths = ' + str(peak_wavelengths))
-    print ('Given wavelengths = ' + str(wavelengths))
     lin_fit = np.polyfit(wavelengths, peak_wavelengths, 1)
     #plt.scatter(wavelengths, peak_wavelengths - np.poly1d(lin_fit) (wavelengths))
     #plt.show()
@@ -159,8 +166,16 @@ if __name__=="__main__":
     PD_currents_A_uncertainty = np.sqrt( np.array(PD_bright_uncertainties) ** 2.0 + np.array(dark_drift_uncertainty) ** 2.0 + (np.array(PD_dark_uncertainties[0]) ** 2.0 + np.array(PD_dark_uncertainties[1]) ** 2.0) / 2 )
     plt.scatter(ref_wavelengths_nm, PD_currents_A,  c = 'k')
     plt.errorbar(ref_wavelengths_nm, PD_currents_A,  yerr = PD_currents_A_uncertainty, ecolor = 'k', fmt = 'none')
+    plt.xlabel('Monochromator wavelength (nm)')
+    plt.ylabel('Photodiode photocurrent (A)')
     plt.savefig(target_dir + 'RefPDPhotocurrent.pdf')
     plt.close('all')
+
+    for i in range(len(wavelengths)):
+        print ('wave ' + str(wavelengths[i]) + ' nm => ')
+        print ('photocurrent ' + str(PD_currents_A[i]) + ' A' )
+        print ('Bright photocurrent ' + str(PD_bright_means[i]) + ' A' )
+        print ('Dark photocurrents ' + str(PD_dark_means[0][i]) + ' A' + ' :: ' + str(PD_dark_means[1][i]) + ' A' )
 
     #collecting_diameter_cm = 4
     #collecting_area_cmSqr = np.pi * (collecting_diameter_cm / 2.0) ** 2.0

@@ -214,15 +214,15 @@ if __name__ == "__main__":
 
         processor_python_obj_save_file = 'FullNight_' + date_str + extra_save_str + '.prsc'
         processor.saveSpecProcessor(processor_python_obj_save_file, save_dir = None, )
+        print ("processor_reloaded.loadSpecProcessor(processor_python_obj_save_file, load_dir = None)")
+        processor.plotScaledLineProfilesInTime(line_variation_image_name = 'skyLineChangesOverTimeScaled' + extra_save_str + '.pdf')
+        processor.plotLineProfilesInTime(line_variation_image_name = 'skyLineChangesOverTime' + extra_save_str + '.pdf')
         print ('You can reload the saved spectrum processor using the following (in the Python environment): ')
         print ('import ProcessRawSpectrumClass as prsc')
         print ("date_str = '" + str(date_str) + "'")
         print ("target_dir = '/Users/sashabrownsberger/Documents/Harvard/physics/stubbs/skySpectrograph/data/' + date_str + '/' " )
         print ('processor_reloaded = prsc.SpectrumProcessor(target_dir, show_fits = 0)')
         print ("processor_python_obj_save_file = '" +   str(processor_python_obj_save_file) + "'" )
-        print ("processor_reloaded.loadSpecProcessor(processor_python_obj_save_file, load_dir = None)")
-        processor.plotScaledLineProfilesInTime(line_variation_image_name = 'skyLineChangesOverTimeScaled' + extra_save_str + '.pdf')
-        processor.plotLineProfilesInTime(line_variation_image_name = 'skyLineChangesOverTime' + extra_save_str + '.pdf')
 
     #arc_lamp_images = getListOfRefSpectrumImages()
     print ('Done.')

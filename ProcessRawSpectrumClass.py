@@ -2530,15 +2530,16 @@ class SpectrumProcessor:
         self.identified_lines_dict[line_dict_id][self.obs_time_keyword] = image_header[self.obs_time_keyword]
         identified_full_emission_line_centers = [fit[1] for fit in full_emission_fits]
         identified_full_emission_line_heights = [fit[0] for fit in full_emission_fits]
+        identified_full_emission_line_widths = [fit[2] for fit in full_emission_fits]
         identified_full_emission_line_floors = [fit[3] for fit in full_emission_fits]
 
         if self.show_fits or self.save_final_plot:
             self.plotFullAnalysisStepImage(parallel_spec_wavelengths, no_background_sub_full_pix_spectrum, full_pix_background_stats, continuum_interp, full_pix_spectrum,
-                                   identified_full_emission_line_centers, identified_full_emission_line_heights, identified_full_emission_line_floors, continuum_fit_points, self.wavelength_of_mu_solution,
+                                   identified_full_emission_line_centers, identified_full_emission_line_heights, identified_full_emission_line_widths, identified_full_emission_line_floors, continuum_fit_points, self.wavelength_of_mu_solution,
                                    self.show_fits, self.save_final_plot, plot_title = 'Spectrum of image: ' + str(line_dict_id),
                                    save_image_name = image_to_measure[:-len(self.data_image_suffix)] + self.processed_multistep_spectra_image_suffix + self.figure_suffix)
             self.plotFullLineImage(parallel_spec_wavelengths, full_pix_spectrum, full_pix_background_stats,
-                                   identified_full_emission_line_centers, identified_full_emission_line_heights, identified_full_emission_line_floors, self.wavelength_of_mu_solution,
+                                   identified_full_emission_line_centers, identified_full_emission_line_heights, identified_full_emission_line_widths, identified_full_emission_line_floors, self.wavelength_of_mu_solution,
                                    self.show_fits, self.save_final_plot, plot_title = 'Spectrum of image: ' + str(line_dict_id), noise_bin_width = self.pix_bin_to_meas_background_noise,
                                    save_image_name = image_to_measure[:-len(self.data_image_suffix)] +  self.processed_spectra_image_suffix + self.figure_suffix)
         if self.save_spectra:
@@ -2574,7 +2575,6 @@ class SpectrumProcessor:
         line_numbers_by_plot = [0] + [np.sum(n_lines_per_plot[0:i]) for i in range(1, n_subplots)]  + [len(line_numbers)]
         n_extra_lines = len(line_numbers) % n_subplots
         timestamps = [can.convertDateTimeStrToSeconds(self.identified_lines_dict[spectrum_id][self.obs_time_keyword], self.date_format_str) for spectrum_id in spectra_ids]
-        print ('timestamps = ' + str(timestamps))
         min_time = np.min(timestamps)
         delta_ts = [(time - min_time) / 60 for time in timestamps]
 
@@ -2583,8 +2583,8 @@ class SpectrumProcessor:
         for i in range(len(line_numbers)):
              plot_number = [j for j in range(len(n_lines_per_plot)) if i < line_numbers_by_plot[1:][j]] [0]
              line_number = line_numbers[i]
-             line_heights = [self.identified_lines_dict[key][self.lines_in_dict_keyword][line_number][0] for key in self.identified_lines_dict.keys()]
-             line_sigmas = [self.identified_lines_dict[key][self.lines_in_dict_keyword][line_number][2] for key in self.identified_lines_dict.keys()]
+             line_heights = np.array([self.identified_lines_dict[key][self.lines_in_dict_keyword][line_number][0] for key in self.identified_lines_dict.keys()])
+             line_sigmas = np.array([self.identified_lines_dict[key][self.lines_in_dict_keyword][line_number][2] for key in self.identified_lines_dict.keys()])
              line_volumes = np.sqrt(2.0 * np.pi * line_sigmas ** 2.0) * line_heights
              max_height = np.max(line_heights + [max_height])
              max_volume = np.max(line_volumes + [max_volume])
@@ -2729,6 +2729,8 @@ class SpectrumProcessor:
              line_number = line_numbers[i]
              line_heights = np.array(all_line_heights[i] )
              line_sigmas = np.array(all_line_sigmas[i])
+             print ('line_heights = ' + str(line_heights))
+             print ('line_sigmas = ' + str(line_sigmas))
              line_volumes = np.sqrt(2.0 * np.pi * line_sigmas ** 2.0) * line_heights
              line_table_to_save = line_table_to_save + [line_volumes]
              line_median, line_std = [np.median(line_volumes), np.std(line_volumes)]
@@ -2830,7 +2832,7 @@ class SpectrumProcessor:
 
 
     def plotFullLineImage(self, parallel_spec_wavelengths, full_pix_spectrum, spectrum_statistics_slice,
-                                full_emission_line_centers, full_emission_heights, full_emission_floors, wavelength_of_mu_solution,
+                                full_emission_line_centers, full_emission_heights, full_emission_widths, full_emission_floors, wavelength_of_mu_solution,
                                 show_fits, save_final_plot,
                                 xlabel = 'Sky wavelength (nm)', spec_ylabel = r'Radiance (Ry nm$^{-1}$)', noise_ylabel = 'Noise ' + r'(Ry nm$^{-1}$)', plot_title = None, xticks = np.arange(400, 1301, 100),
                                 xlims = None, ylims = None, save_image_name = 'NO_NAME_SAVED_FIGURE_OF_OSELOTS_LINES.txt', legend_pos = [[0.1, 0.75], 'center left'],
@@ -2914,8 +2916,8 @@ class SpectrumProcessor:
 
 
     def plotFullAnalysisStepImage(self, parallel_spec_wavelengths, no_background_sub_full_pix_spectrum, full_pix_background_stats, continuum_interp, full_pix_spectrum,
-                                full_emission_line_centers, full_emission_heights, full_emission_floors, continuum_fit_points, wavelength_of_mu_solution,
-                                show_fits, save_final_plot, xlabel = 'Sky wavelength (nm)', ylabel = 'Relative intensity (normalized)', plot_title = None, xticks = np.arange(400, 1301, 100),
+                                full_emission_line_centers, full_emission_heights, full_emission_widths, full_emission_floors, continuum_fit_points, wavelength_of_mu_solution,
+                                show_fits, save_final_plot, xlabel = 'Sky wavelength (nm)', ylabel = 'Relative intensity (normalized)', plot_title = None, xticks = np.arange(400, 1301, 100), n_line_sigs_to_plot = 3,
                                 xlims = None, ylims = None, save_image_name = 'NO_NAME_SAVED_FIGURE_OF_OSELOTS_LINES.txt', legend_pos = [[0.1, 0.75], 'center left']):
         """
         Saves a plot of the measured spectrum, in true sky units (Rayleigh/nm
@@ -2936,6 +2938,16 @@ class SpectrumProcessor:
         pre_throughput_spec = plt.plot(parallel_spec_wavelengths, no_background_sub_full_pix_spectrum / interped_throughput / np.max(no_background_sub_full_pix_spectrum / interped_throughput), c = 'purple', zorder = -2)[0]
         continuum_estimate = plt.plot(parallel_spec_wavelengths, continuum_interp(parallel_spec_wavelengths) / np.max(np.max(no_background_sub_full_pix_spectrum / interped_throughput)), c = 'green', zorder = 0, linestyle = '--')[0]
         background_sub_spec = plt.plot(parallel_spec_wavelengths, full_pix_spectrum / np.max(full_pix_spectrum), c = 'k', zorder = 2)[0]
+        print ('wavelength_of_mu_solution = ' + str(wavelength_of_mu_solution))
+        for i in range(len(full_emission_heights)):
+            floor = full_emission_floors[i]
+            width = full_emission_widths[i]
+            center = full_emission_line_centers[i]
+            height = full_emission_heights[i]
+            plot_pixels = np.array(range(int(center - width * n_line_sigs_to_plot), int(center + width * n_line_sigs_to_plot + 1)))
+            plot_waves = [wavelength_of_mu_solution(pix) for pix in plot_pixels]
+            plot_ys = (height * np.exp(-(center - plot_pixels) ** 2.0 / (2.0 * width ** 2.0)) + floor) / np.max(full_pix_spectrum)
+            plt.plot(plot_waves, plot_ys, c = 'k', alpha = 0.25, linestyle = '--')
         identified_lines = plt.scatter([wavelength_of_mu_solution(center) for center in full_emission_line_centers], (np.array(full_emission_heights) + np.array(full_emission_floors)) / np.max(full_pix_spectrum), marker = 'x', c = 'orange', zorder = 3)
         continuum_sampling_points = plt.scatter(continuum_fit_points[0], np.array(continuum_fit_points[1]) / np.max(no_background_sub_full_pix_spectrum), marker = 'o', color = 'green', zorder = 1)
         identified_line_centers = [plt.axvline(wavelength_of_mu_solution(center), linestyle = '--', color = 'orange', linewidth = 0.75) for center in full_emission_line_centers]
@@ -3015,6 +3027,7 @@ class SpectrumProcessor:
         #print ('self.full_emission_fits = ' + str(self.full_emission_fits))
         self.identified_full_emission_line_centers = [fit[1] for fit in self.full_emission_fits]
         full_emission_heights = [fit[0] for fit in self.full_emission_fits]
+        full_emission_widths = [fit[2] for fit in self.full_emission_fits]
         full_emission_floors = [fit[3] for fit in self.full_emission_fits]
         full_emission_pixels_vs_widths = [[fit[1], fit[2]] for fit in self.full_emission_fits]
         self.identified_lines_dict[self.stacked_image_keyword] = {}
@@ -3025,12 +3038,12 @@ class SpectrumProcessor:
         if self.show_fits or self.save_final_plot:
             print ('self.full_pix_spectrum = ' + str(self.full_pix_spectrum))
             self.plotFullAnalysisStepImage(self.parallel_spec_wavelengths[pix_target_range[0]:pix_target_range[1]], self.no_background_sub_full_pix_spectrum[pix_target_range[0]:pix_target_range[1]], self.full_pix_background_stats[pix_target_range[0]:pix_target_range[1]], self.continuum_interp, self.full_pix_spectrum[pix_target_range[0]:pix_target_range[1]],
-                                    self.identified_full_emission_line_centers, full_emission_heights, full_emission_floors, self.continuum_fit_points, self.wavelength_of_mu_solution,
+                                    self.identified_full_emission_line_centers, full_emission_heights, full_emission_widths, full_emission_floors, self.continuum_fit_points, self.wavelength_of_mu_solution,
                                     self.show_fits, self.save_final_plot, plot_title = plot_title,
                                     save_image_name = stacked_image_name  + self.processed_multistep_spectra_image_suffix + self.figure_suffix)
 
             self.plotFullLineImage(self.parallel_spec_wavelengths[pix_target_range[0]:pix_target_range[1]], self.full_pix_spectrum[pix_target_range[0]:pix_target_range[1]], self.full_pix_background_stats[pix_target_range[0]:pix_target_range[1]],
-                                    self.identified_full_emission_line_centers, full_emission_heights, full_emission_floors, self.wavelength_of_mu_solution,
+                                    self.identified_full_emission_line_centers, full_emission_heights,  full_emission_widths, full_emission_floors, self.wavelength_of_mu_solution,
                                     self.show_fits, self.save_final_plot, plot_title = plot_title, noise_bin_width = self.pix_bin_to_meas_background_noise,
                                     save_image_name = stacked_image_name  + self.processed_spectra_image_suffix + self.figure_suffix)
 
