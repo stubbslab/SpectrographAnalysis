@@ -3308,7 +3308,8 @@ class SpectrumProcessor:
                  background_buffer = 10, background_size = 100, background_low = 1, n_std_for_strong_line = 20.0, n_std_for_full_line = 10.0,
                  ref_params_subdir = '', scatter_data_subdir = 'data/ut20211210/',
                  ref_params_file = 'OSELOTSDefaults.txt', scatter_data_key_file = 'scatter_map_Mono_2021_12_10.txt',
-                 remove_intermed_images = 1, stacked_image_name_root = None, date = None, throughput_file = None):
+                 remove_intermed_images = 1, stacked_image_name_root = None, date = None, throughput_file = None,
+                 fancy_plot = 0):
 
         #ref_params_dir = reference_data_dir_root + ref_params_subdir
         scatter_data_dir = reference_data_dir_root + scatter_data_subdir
@@ -3351,8 +3352,9 @@ class SpectrumProcessor:
         if throughput_file != None:
             self.throughput_file = throughput_file
         self.throughput_interp = self.importSystemThroughput()
-        plt.rc('font', family='serif')
-        plt.rc('text', usetex=True)
+        if fancy_plot:
+            plt.rc('font', family='serif')
+            plt.rc('text', usetex=True)
         #spec_files = spec_file.replace('[','')
         #spec_files = spec_files.replace(']','')
         #spec_files = spec_files.split(',')
