@@ -782,7 +782,7 @@ class CommandHolder:
         """
         return int(self.getOSELOTSVar('background_buffer_for_measuring_std'))
 
-    def __init__(self, spectrograph_file = 'OSELOTSDefaults.txt', defaults_dir = '/Users/sashabrownsberger/Documents/sashas_python_scripts/skySpectrograph/'):
+    def __init__(self, spectrograph_file = 'OSELOTSDefaults.txt', defaults_dir = ''):
         self.defaults_file = defaults_dir + spectrograph_file
         self.varContainer = bvc.bashVarContainerObject(container_file = spectrograph_file, container_dir = defaults_dir, readInFromFile = True, delimiter = '|')
         #print ('self.varContainer.var_dict = ' + str(self.varContainer.var_dict))

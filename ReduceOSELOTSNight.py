@@ -173,7 +173,7 @@ if __name__ == "__main__":
 
 
 
-    processor = prsc.SpectrumProcessor(target_dir, show_fits = 0, date = date_str.split('_'), ref_spec = arc_lamp_prefix, redo_master_bias = overwrite, redo_master_dark = overwrite, bias_dir = bias_dir, dark_dir = dark_dir )
+    processor = prsc.SpectrumProcessor(root_dir , target_dir, show_fits = 0, date = date_str.split('_'), ref_spec = arc_lamp_prefix, redo_master_bias = overwrite, redo_master_dark = overwrite, bias_dir = bias_dir, dark_dir = dark_dir )
 
     redo_spectrum = overwrite
     if (redo_spectrum and len(arc_lamp_imgs) > 0) or not(os.path.isfile(target_dir + ref_spec_solution_file)):
@@ -204,7 +204,7 @@ if __name__ == "__main__":
         dark_sky_imgs = dark_sky_imgs_set[j]
         dark_sky_indeces = dark_sky_indeces_set[j]
         sky_indeces = sky_indeces_set[j]
-        processor = prsc.SpectrumProcessor(target_dir, show_fits = 0, date = date_str.split('_'), ref_spec = arc_lamp_prefix, dark_dir = dark_dir, bias_dir = bias_dir)
+        processor = prsc.SpectrumProcessor(root_dir, target_dir, show_fits = 0, date = date_str.split('_'), ref_spec = arc_lamp_prefix, dark_dir = dark_dir, bias_dir = bias_dir)
 
         processor.pullCombinedSpectrumFromImages(dark_sky_imgs, analyze_spec_of_ind_images = 0, line_dict_id = None, plot_title = 'Stacked Spectrum', save_intermediate_images = 0, stacked_image_name = 'StackedSkyImage_img' + str(dark_sky_indeces[0]) + 'To' + str(dark_sky_indeces[-1]), apply_scatter_correction = 0, )
         for i in range(len(sky_imgs)):
@@ -221,8 +221,9 @@ if __name__ == "__main__":
         print ('You can reload the saved spectrum processor using the following (in the Python environment): ')
         print ('import ProcessRawSpectrumClass as prsc')
         print ("date_str = '" + str(date_str) + "'")
-        print ("target_dir = '/Users/sashabrownsberger/Documents/Harvard/physics/stubbs/skySpectrograph/data/' + date_str + '/' " )
-        print ('processor_reloaded = prsc.SpectrumProcessor(target_dir, show_fits = 0)')
+        print ("ref_dir_root = '" + dir_root + "'")
+        print ("target_dir = '" + target_dir + "'" )
+        print ('processor_reloaded = prsc.SpectrumProcessor(ref_dir_root, target_dir, show_fits = 0)')
         print ("processor_python_obj_save_file = '" +   str(processor_python_obj_save_file) + "'" )
 
     #arc_lamp_images = getListOfRefSpectrumImages()
