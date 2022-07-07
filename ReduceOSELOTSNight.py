@@ -102,7 +102,7 @@ if __name__ == "__main__":
         print ('Did not get properly formatted date for the night to analyze.  I expect a date formatted like: YYYY_MM_DD, passed as 1st argument.')
         sys.exit()
 
-    ref_param_holder = ref_param.CommandHolder(spectrograph_file = 'OSELOTSDefaults.txt', defaults_dir = root_dir)
+    ref_param_holder = ref_param.CommandHolder(spectrograph_file = 'OSELOTSDefaults.txt', defaults_dir = './')
     ref_spec_solution_file = ref_param_holder.getRefSpecSolutionFile()
 
 
