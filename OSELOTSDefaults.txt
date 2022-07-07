@@ -5,7 +5,7 @@ image_suffix|.fits
 master_bias_root|BIAS
 master_dark_root|DARK
 cosmic_prefix|crc_
-archival_data_dir|/Users/sashabrownsberger/Documents/Harvard/physics/stubbs/skySpectrograph/calibrationDataFiles/
+archival_data_dir|calibrationDataFiles/
 background_buffer|10
 background_size|100
 background_low|1
