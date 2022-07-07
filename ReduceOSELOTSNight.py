@@ -94,7 +94,7 @@ if __name__ == "__main__":
     date_str = sys_args[0]
 
     #NEW USER: UPDATE THIS VARIABLE!!!!
-    root_dir = '/Users/sashabrownsberger/Documents/Harvard/physics/stubbs/skySpectrograph/data/'
+    root_dir = '/Users/sashabrownsberger/Documents/Harvard/physics/stubbs/skySpectrograph/'
     data_subdir = 'data/'
     data_dir = root_dir + data_subdir
 
